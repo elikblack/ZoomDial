@@ -374,6 +374,9 @@
   deadZoneEl.setAttribute('stroke-width', 7);
   deadZoneEl.setAttribute('stroke-linecap', 'butt');
   deadZoneEl.setAttribute('fill', 'none');
+  // A circle with no dash pattern renders as a full ring. Seed the
+  // dead zone at zero length so first load matches later replays.
+  deadZoneEl.setAttribute('stroke-dasharray', `0 ${gCircumference}`);
   deadZoneEl.setAttribute('transform', `rotate(270 ${cx} ${cy})`);
   screenEl.querySelector('svg').insertBefore(deadZoneEl, ringEl);
 

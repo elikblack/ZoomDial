@@ -230,11 +230,20 @@
     color:var(--alert);
     box-shadow:none;
   }
-  /* everything the sequence reveals starts invisible */
-  #pointerBox, #pointerCaret,
-  .readout,
-  .fov-annulus-seg, .fov-tick, .fov-label-fixed,
-  #zoomLabels text{
+  /* First-paint safety: every sequence-controlled element begins dark. */
+  .startup-pending #pointerBox,
+  .startup-pending #pointerCaret,
+  .startup-pending .tick,
+  .startup-pending #greebleTrack,
+  .startup-pending #greebleFill,
+  .startup-pending #deadZone,
+  .startup-pending #zoomLabels text,
+  .startup-pending .fov-annulus-seg,
+  .startup-pending .fov-tick,
+  .startup-pending .fov-label-fixed,
+  .startup-pending #eyebrow,
+  .startup-pending #value,
+  .startup-pending #fov-box{
     opacity:0;
   }
 
@@ -248,7 +257,7 @@
   .replay-btn:hover{ background:var(--phosphor-mid); color:#000; }
 </style>
 </head>
-<body>
+<body class="startup-pending">
 
   <div class="stage">
     <div class="bezel">
@@ -267,9 +276,9 @@
           <g id="fovLabelsFixed"></g>
         </svg>
         <div class="readout">
-          <div class="eyebrow" id="eyebrowBox">EO LENS</div>
+          <div class="eyebrow" id="eyebrow">EO LENS</div>
           <div class="value" id="value">024MM</div>
-          <div class="fov-box" id="fovBox">FOV 84°</div>
+          <div class="fov-box" id="fov-box">FOV 84°</div>
         </div>
       </div>
 
@@ -314,8 +323,8 @@
   const greebleTrackEl = document.getElementById('greebleTrack');
   const greebleFillEl= document.getElementById('greebleFill');
   const valueEl      = document.getElementById('value');
-  const fovBoxEl     = document.getElementById('fovBox');
-  const eyebrowEl    = document.getElementById('eyebrowBox');
+  const fovBoxEl     = document.getElementById('fov-box');
+  const eyebrowEl    = document.getElementById('eyebrow');
   const pointerBoxEl = document.getElementById('pointerBox');
   const pointerTriEl = document.getElementById('pointerCaret');
   const readoutEl    = document.querySelector('.readout');
@@ -626,6 +635,7 @@
   const COL_NORMAL = '#39ff6b';
   const COL_MID    = '#1c8f38';
   const COL_DIM    = '#0c3a18';
+  const COL_GLASS  = '#020602';
 
   function lerpColor(hexA, hexB, t){
     const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
@@ -633,15 +643,6 @@
     const br=(b>>16)&255, bg=(b>>8)&255, bb=b&255;
     const r = Math.round(ar+(br-ar)*t), g = Math.round(ag+(bg-ag)*t), bl = Math.round(ab+(bb-ab)*t);
     return `rgb(${r},${g},${bl})`;
-  }
-
-  function shuffled(n){
-    const a = Array.from({length:n}, (_,i) => i);
-    for (let i = a.length - 1; i > 0; i--){
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
   }
 
   const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
@@ -663,18 +664,10 @@
   //
   // `resolveStarts()` translates those readable instructions into an
   // absolute millisecond value called `resolvedStart`, which is what the
-  // animation loop uses. Example: if "pointer" starts at 100ms and lasts
-  // 500ms, a dependent step using `at: 0.5` gets resolvedStart = 350ms.
-  // The original `start` instruction remains unchanged and readable.
-  //
-  // Relative starts make experiments easy: change `after`, adjust `at`, or
-  // reorder dependent steps without maintaining a pile of manual timestamps.
-  // A referenced step must appear earlier in the list so its start time has
-  // already been resolved.
+  // animation loop uses. A referenced step must appear earlier in the list.
   //
   // Effects are swappable single-purpose objects. Each has a `reset` method
   // for the pre-sequence state and an `apply` method for progress from 0 to 1.
-  // New effects can be added without changing the timeline runner.
 
   function resolveStarts(steps){
     const byId = {};
@@ -685,7 +678,7 @@
       } else {
         const ref = byId[s.start.after];
         if (!ref || ref.resolvedStart == null){
-          throw new Error(`Step "${s.id}" refers to "${s.start.after}" before it's resolved — list steps in dependency order.`);
+          throw new Error(`Step "${s.id}" refers to "${s.start.after}" before it's resolved - list steps in dependency order.`);
         }
         s.resolvedStart = ref.resolvedStart + ref.duration * s.start.at;
       }
@@ -697,8 +690,6 @@
     return Math.max(...steps.map(s => s.resolvedStart + s.duration));
   }
 
-  // Runs a resolved step list on its own requestAnimationFrame loop and
-  // calls onDone once every step has finished.
   function runTimeline(steps, onDone){
     steps.forEach(s => s.effect.reset(s.targets(), s.params));
 
@@ -720,23 +711,60 @@
 
   // ---------- effects ----------
 
-  // Bright flash, then settles to a normal colour (and optionally opacity).
+  // Bright flash, then settles to a normal colour and opacity.
   const flashIn = {
     reset(els){ els.forEach(el => { el.style.opacity = 0; }); },
     apply(els, p, params){
+      const eased = params.ease ? params.ease(p) : p;
       const colorProp = params.colorProp || 'stroke';
-      const color = lerpColor(params.from ?? COL_BRIGHT, params.to, p);
+      const color = lerpColor(params.from ?? COL_BRIGHT, params.to, eased);
       els.forEach(el => {
         el.style.opacity = params.opacityFrom != null
-          ? params.opacityFrom + (params.opacityTo - params.opacityFrom) * p
+          ? params.opacityFrom + (params.opacityTo - params.opacityFrom) * eased
           : 1;
         el.style[colorProp] = color;
       });
     }
   };
 
-  // Settles from one rotation angle to another — single eased move,
-  // e.g. correcting from a parked offset back to true rest.
+  // Plain opacity fade for elements whose normal CSS already has the colour.
+  const fadeIn = {
+    reset(els){ els.forEach(el => { el.style.opacity = 0; }); },
+    apply(els, p, params){
+      const eased = params.ease ? params.ease(p) : p;
+      const from = params.opacityFrom ?? 0;
+      const to = params.opacityTo ?? 1;
+      els.forEach(el => { el.style.opacity = from + (to - from) * eased; });
+    }
+  };
+
+  // Reveals grouped FOV sectors in order while rotating the ring into place.
+  // Each target is an array, allowing a band segment and its tick to appear
+  // together as one editable sequence beat.
+  const sectorSweepIn = {
+    reset(groups, params){
+      groups.flat().forEach(el => { el.style.opacity = 0; });
+      const angle = params.fromAngle ?? 0;
+      params.ring.style.transform = `rotate(${angle}deg)`;
+      params.onUpdate?.(angle);
+    },
+    apply(groups, p, params){
+      const eased = params.ease ? params.ease(p) : p;
+      const visibleCount = Math.ceil(groups.length * p);
+      groups.forEach((group, i) => {
+        group.forEach(el => { el.style.opacity = i < visibleCount ? 1 : 0; });
+      });
+
+      const from = params.fromAngle ?? 0;
+      const to = params.toAngle ?? 0;
+      const angle = from + (to - from) * eased;
+      params.ring.style.transform = `rotate(${angle}deg)`;
+      params.onUpdate?.(angle);
+    }
+  };
+
+  // General-purpose rotation effects retained as additional options for
+  // sequence experiments.
   const rotateIn = {
     reset(els, params){ els.forEach(el => { el.style.transform = `rotate(${params.from}deg)`; }); },
     apply(els, p, params){
@@ -747,9 +775,6 @@
     }
   };
 
-  // Spins continuously through a fixed number of degrees before stopping
-  // — distinct from rotateIn's single settle, for a ring that visibly
-  // winds up rather than just eases into place.
   const rotateAround = {
     reset(els, params){ els.forEach(el => { el.style.transform = `rotate(${params.from ?? 0}deg)`; }); },
     apply(els, p, params){
@@ -761,24 +786,21 @@
   };
 
   // ==========================================================
-  // Sequence definition — zoom ring
+  // Sequence definition - complete startup
   // ==========================================================
   //
-  // This list is the experiment board. The engine does not require a fixed
-  // visual order. Reorder steps, change their `start` relationships, assign
-  // different durations, or swap effects to test another rhythm.
-  //
-  // The current experiment is:
-  //   pointer -> major ticks -> minor ticks -> ring
-  // Each step waits for the previous one to finish (`at: 1`). Changing `at`
-  // to 0.5 starts the next step halfway through the previous fade. Values
-  // below 1 overlap; values above 1 add a pause after the referenced step.
+  // This is the experiment board for every visible startup element. Change
+  // durations, `start` relationships, effects, and effect parameters here.
+  // Array order only needs to respect dependencies: a referenced step must be
+  // listed before the step that refers to it.
 
-  const T_CASCADE = 500; // shared fade duration
+  const T_CASCADE = 500;
+  const FOV_START_ANGLE = 60;
 
-  const zoomRingSteps = [
+  const startupSteps = [
+    // ----- zoom ring structure -----
     {
-	  id: 'pointer', effect: flashIn, duration: T_CASCADE, start: 1000,
+      id: 'pointer', effect: flashIn, duration: T_CASCADE, start: 1000,
       targets: () => [pointerBoxEl, pointerTriEl],
       params: { from: COL_BRIGHT, to: COL_NORMAL, colorProp: 'background' }
     },
@@ -793,49 +815,114 @@
       params: { from: COL_BRIGHT, to: COL_MID }
     },
     {
-	  id: 'ring', effect: flashIn, duration: T_CASCADE, start: { after: 'minors', at: 0.25 },
+      id: 'ring', effect: flashIn, duration: T_CASCADE, start: { after: 'minors', at: 0.25 },
       targets: () => [greebleTrackEl],
       params: { from: COL_BRIGHT, to: COL_DIM, opacityFrom: 0.25, opacityTo: 0.4 }
     },
+
+    // ----- zoom ring numbers -----
+    {
+      id: 'zoomNumbers', effect: flashIn, duration: 500, start: { after: 'ring', at: 0.5 },
+      targets: () => zoomLabels.map(({ el }) => el),
+      params: { from: COL_BRIGHT, to: COL_MID, colorProp: 'fill' }
+    },
+
+    // ----- FOV ring -----
+    {
+      id: 'fovRing', effect: sectorSweepIn, duration: 800, start: { after: 'ring', at: 0.75 },
+      targets: () => fovSegments.map((seg, i) => [seg.el, fovTicks[i].el]),
+      params: {
+        ring: fovRingEl,
+        fromAngle: FOV_START_ANGLE,
+        toAngle: 0,
+        ease: easeOutCubic,
+        onUpdate: positionFovLabels
+      }
+    },
+
+    // ----- FOV ring numbers -----
+    {
+      id: 'fovNumbers', effect: flashIn, duration: 500, start: { after: 'fovRing', at: 0.65 },
+      targets: () => fovLabels.map(({ el }) => el),
+      params: { from: COL_BRIGHT, to: COL_GLASS, colorProp: 'fill' }
+    },
+
+    // ----- centre readout -----
+    {
+      id: 'eyebrow', effect: flashIn, duration: 400, start: { after: 'fovRing', at: 0.25 },
+      targets: () => [eyebrowEl],
+      params: { from: COL_BRIGHT, to: COL_MID, colorProp: 'color' }
+    },
+    {
+      id: 'value', effect: flashIn, duration: 450, start: { after: 'eyebrow', at: 0.5 },
+      targets: () => [valueEl],
+      params: { from: COL_BRIGHT, to: COL_NORMAL, colorProp: 'color' }
+    },
+    {
+      id: 'fovReadout', effect: flashIn, duration: 400, start: { after: 'value', at: 0.5 },
+      targets: () => [fovBoxEl],
+      params: { from: COL_BRIGHT, to: COL_GLASS, colorProp: 'color' }
+    }
   ];
 
-  resolveStarts(zoomRingSteps);
-  const PHASE1_END = sequenceEnd(zoomRingSteps); // hands off to the FOV phase below
-
-  // Phase 2: FOV ring sweeps in from 2 o'clock, one of its 8 segments at
-  // a time; a random zoom label rides along with each segment reveal.
-  // Not yet rebuilt on the engine above — out of scope for this pass.
-  const FOV_START_ANGLE = 60; // 2 o'clock
-  const T_SWEEP   = 640;      // 80ms/segment \u00d7 8
-  const T_CORRECT = 250;      // settle back to true rest afterward
+  resolveStarts(startupSteps);
 
   let sequenceActive = false;
 
   function resetDisplayState(){
+    document.body.classList.add('startup-pending');
     rotation = 0;
+    render();
 
     // Arc-based indicators are ordinary stroked circles until a dash pattern
-    // is assigned, so explicitly collapse them before the sequence starts.
+    // is assigned, so explicitly collapse them before every sequence run.
     [greebleFillEl, deadZoneEl].forEach(el =>
       el.setAttribute('stroke-dasharray', `0 ${gCircumference}`));
 
-    // Clear interactive state left over from a previous run.
     [valueEl, fovBoxEl, eyebrowEl, pointerBoxEl, pointerTriEl].forEach(el =>
       el.classList.remove('maxed'));
+  }
 
-    // Everything outside the zoom-ring timeline begins hidden. The zoom-ring
-    // steps reset their own targets when runTimeline() starts.
-    readoutEl.style.opacity = 0;
-    valueEl.style.color = COL_BRIGHT;
-    eyebrowEl.style.color = COL_BRIGHT;
+  function finishStartupSequence(){
+    document.body.classList.remove('startup-pending');
 
-    fovSegments.forEach(({ el }) => { el.style.opacity = 0; });
-    fovTicks.forEach(({ el }) => { el.style.opacity = 0; });
-    fovLabels.forEach(({ el }) => { el.style.opacity = 0; });
-    zoomLabels.forEach(({ el }) => { el.style.opacity = 0; });
+    // Remove temporary animation styles so normal CSS and max-zoom classes
+    // regain control during interaction.
+    [pointerBoxEl, pointerTriEl].forEach(el => {
+      el.style.opacity = '';
+      el.style.background = '';
+    });
+    majorTickEls.forEach(el => {
+      el.style.opacity = '';
+      el.style.stroke = '';
+    });
+    minorTicks.forEach(({ el }) => {
+      el.style.opacity = '';
+      el.style.stroke = '';
+    });
+    greebleTrackEl.style.opacity = '';
+    greebleTrackEl.style.stroke = '';
 
-    fovRingEl.style.transform = `rotate(${FOV_START_ANGLE}deg)`;
-    positionFovLabels(FOV_START_ANGLE);
+    zoomLabels.forEach(({ el }) => {
+      el.style.opacity = '';
+      el.style.fill = '';
+    });
+    fovSegments.forEach(({ el }) => { el.style.opacity = ''; });
+    fovTicks.forEach(({ el }) => { el.style.opacity = ''; });
+    fovLabels.forEach(({ el }) => {
+      el.style.opacity = '';
+      el.style.fill = '';
+    });
+
+    [eyebrowEl, valueEl, fovBoxEl].forEach(el => {
+      el.style.opacity = '';
+      el.style.color = '';
+    });
+
+    fovRingEl.style.transform = '';
+    positionFovLabels(0);
+    sequenceActive = false;
+    render();
   }
 
   function runStartupSequence(){
@@ -843,73 +930,7 @@
     sequenceActive = true;
 
     resetDisplayState();
-    runTimeline(zoomRingSteps, runFovPhase);
-  }
-
-  // FOV sweep, paired zoom-label reveals, and the correction rotation —
-  // unchanged logic from before, just re-homed to run as its own phase
-  // once the zoom ring's timeline (above) hands off to it.
-  function runFovPhase(){
-    const zoomRevealOrder = shuffled(zoomLabels.length);
-    let zoomRevealCursor = 0;
-    const revealedSegments = new Set();
-
-    const t0 = performance.now();
-
-    function frame(now){
-      const sweepT = now - t0;
-
-      readoutEl.style.opacity = 1;
-      const rp = Math.min(1, sweepT / T_SWEEP);
-      const readoutCol = lerpColor(COL_BRIGHT, COL_NORMAL, rp);
-      valueEl.style.color = readoutCol;
-      eyebrowEl.style.color = readoutCol;
-
-      const sweepAngle = Math.min(360, (sweepT / T_SWEEP) * 360);
-
-      fovSegments.forEach((seg, i) => {
-        if (seg.revealAngle <= sweepAngle && !revealedSegments.has(i)){
-          revealedSegments.add(i);
-          seg.el.style.opacity = 1;
-          fovTicks[i].el.style.opacity = 1;
-          fovLabels[i].el.style.opacity = 1;
-
-          // pull the next random zoom label along with this beat
-          if (zoomRevealCursor < zoomLabels.length){
-            zoomLabels[zoomRevealOrder[zoomRevealCursor]].el.style.opacity = 1;
-            zoomRevealCursor++;
-          }
-        }
-      });
-
-      // correction: FOV ring settles from 2 o'clock back to rest
-      if (sweepT >= T_SWEEP){
-        const cp = Math.min(1, (sweepT - T_SWEEP) / T_CORRECT);
-        const eased = easeOutCubic(cp);
-        const correctionAngle = FOV_START_ANGLE * (1 - eased);
-        fovRingEl.style.transform = `rotate(${correctionAngle}deg)`;
-        positionFovLabels(correctionAngle);
-      }
-
-      if (sweepT < T_SWEEP + T_CORRECT){
-        requestAnimationFrame(frame);
-      } else {
-        // hand off cleanly to normal interactive state
-        sequenceActive = false;
-        valueEl.style.color = '';
-        eyebrowEl.style.color = '';
-        greebleTrackEl.style.opacity = '';
-        greebleTrackEl.style.stroke = '';
-        majorTickEls.forEach(el => { el.style.opacity = ''; el.style.stroke = ''; });
-        minorTicks.forEach(({ el }) => { el.style.opacity = ''; el.style.stroke = ''; });
-        // zoomLabels default to opacity:0 in CSS (that's how they start
-        // hidden) — clearing their inline style would let that default
-        // reassert itself and hide them again right at handoff
-        zoomLabels.forEach(({ el }) => { el.style.opacity = 1; });
-        render();
-      }
-    }
-    requestAnimationFrame(frame);
+    runTimeline(startupSteps, finishStartupSequence);
   }
 
   replayBtn.addEventListener('click', runStartupSequence);

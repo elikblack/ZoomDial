@@ -778,25 +778,25 @@
 
   const zoomRingSteps = [
     {
-      id: 'pointer', effect: flashIn, duration: T_CASCADE, start: 100,
+	  id: 'pointer', effect: flashIn, duration: T_CASCADE, start: 1000,
       targets: () => [pointerBoxEl, pointerTriEl],
       params: { from: COL_BRIGHT, to: COL_NORMAL, colorProp: 'background' }
     },
     {
-      id: 'majors', effect: flashIn, duration: T_CASCADE, start: { after: 'pointer', at: 1 },
-      targets: () => majorTickEls,
-      params: { from: COL_BRIGHT, to: COL_MID }
-    },
-    {
-      id: 'minors', effect: flashIn, duration: T_CASCADE, start: { after: 'majors', at: 1 },
+      id: 'minors', effect: flashIn, duration: T_CASCADE, start: { after: 'pointer', at: 1.25 },
       targets: () => minorTicks.map(t => t.el),
       params: { from: COL_BRIGHT, to: COL_DIM }
     },
     {
-      id: 'ring', effect: flashIn, duration: T_CASCADE, start: { after: 'pointer', at: 0.25 },
+      id: 'majors', effect: flashIn, duration: T_CASCADE, start: { after: 'pointer', at: 0.5 },
+      targets: () => majorTickEls,
+      params: { from: COL_BRIGHT, to: COL_MID }
+    },
+    {
+	  id: 'ring', effect: flashIn, duration: T_CASCADE, start: { after: 'minors', at: 0.25 },
       targets: () => [greebleTrackEl],
-      params: { from: COL_BRIGHT, to: COL_DIM, opacityFrom: 1, opacityTo: 0.4 }
-    }
+      params: { from: COL_BRIGHT, to: COL_DIM, opacityFrom: 0.25, opacityTo: 0.4 }
+    },
   ];
 
   resolveStarts(zoomRingSteps);

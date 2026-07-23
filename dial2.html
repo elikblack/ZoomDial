@@ -374,9 +374,6 @@
   deadZoneEl.setAttribute('stroke-width', 7);
   deadZoneEl.setAttribute('stroke-linecap', 'butt');
   deadZoneEl.setAttribute('fill', 'none');
-  // A circle with no dash pattern renders as a full ring. Seed the
-  // dead zone at zero length so first load matches later replays.
-  deadZoneEl.setAttribute('stroke-dasharray', `0 ${gCircumference}`);
   deadZoneEl.setAttribute('transform', `rotate(270 ${cx} ${cy})`);
   screenEl.querySelector('svg').insertBefore(deadZoneEl, ringEl);
 
@@ -814,19 +811,20 @@
 
   let sequenceActive = false;
 
-  function runStartupSequence(){
-    if (sequenceActive) return;
-    sequenceActive = true;
+  function resetDisplayState(){
     rotation = 0;
 
-    // clear maxed state left over from any prior interactive session —
-    // otherwise the red styling silently persists through the whole
-    // sequence instead of resetting to normal
+    // Arc-based indicators are ordinary stroked circles until a dash pattern
+    // is assigned, so explicitly collapse them before the sequence starts.
+    [greebleFillEl, deadZoneEl].forEach(el =>
+      el.setAttribute('stroke-dasharray', `0 ${gCircumference}`));
+
+    // Clear interactive state left over from a previous run.
     [valueEl, fovBoxEl, eyebrowEl, pointerBoxEl, pointerTriEl].forEach(el =>
       el.classList.remove('maxed'));
 
-    // --- reset everything outside the zoom ring's own scope ---
-    // (the zoom ring steps reset themselves via each effect's reset())
+    // Everything outside the zoom-ring timeline begins hidden. The zoom-ring
+    // steps reset their own targets when runTimeline() starts.
     readoutEl.style.opacity = 0;
     valueEl.style.color = COL_BRIGHT;
     eyebrowEl.style.color = COL_BRIGHT;
@@ -838,7 +836,13 @@
 
     fovRingEl.style.transform = `rotate(${FOV_START_ANGLE}deg)`;
     positionFovLabels(FOV_START_ANGLE);
+  }
 
+  function runStartupSequence(){
+    if (sequenceActive) return;
+    sequenceActive = true;
+
+    resetDisplayState();
     runTimeline(zoomRingSteps, runFovPhase);
   }
 

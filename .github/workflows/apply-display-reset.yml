@@ -1,0 +1,113 @@
+name: Apply display reset
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-display-reset.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Centralize startup reset state
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('dial2.html')
+          text = path.read_text()
+
+          old_dead_zone_seed = """  // A circle with no dash pattern renders as a full ring. Seed the
+  // dead zone at zero length so first load matches later replays.
+  deadZoneEl.setAttribute('stroke-dasharray', `0 ${gCircumference}`);
+"""
+
+          old_startup = """  function runStartupSequence(){
+    if (sequenceActive) return;
+    sequenceActive = true;
+    rotation = 0;
+
+    // clear maxed state left over from any prior interactive session —
+    // otherwise the red styling silently persists through the whole
+    // sequence instead of resetting to normal
+    [valueEl, fovBoxEl, eyebrowEl, pointerBoxEl, pointerTriEl].forEach(el =>
+      el.classList.remove('maxed'));
+
+    // --- reset everything outside the zoom ring's own scope ---
+    // (the zoom ring steps reset themselves via each effect's reset())
+    readoutEl.style.opacity = 0;
+    valueEl.style.color = COL_BRIGHT;
+    eyebrowEl.style.color = COL_BRIGHT;
+
+    fovSegments.forEach(({ el }) => { el.style.opacity = 0; });
+    fovTicks.forEach(({ el }) => { el.style.opacity = 0; });
+    fovLabels.forEach(({ el }) => { el.style.opacity = 0; });
+    zoomLabels.forEach(({ el }) => { el.style.opacity = 0; });
+
+    fovRingEl.style.transform = `rotate(${FOV_START_ANGLE}deg)`;
+    positionFovLabels(FOV_START_ANGLE);
+
+    runTimeline(zoomRingSteps, runFovPhase);
+  }
+"""
+
+          new_startup = """  function resetDisplayState(){
+    rotation = 0;
+
+    // Arc-based indicators are ordinary stroked circles until a dash pattern
+    // is assigned, so explicitly collapse them before the sequence starts.
+    [greebleFillEl, deadZoneEl].forEach(el =>
+      el.setAttribute('stroke-dasharray', `0 ${gCircumference}`));
+
+    // Clear interactive state left over from a previous run.
+    [valueEl, fovBoxEl, eyebrowEl, pointerBoxEl, pointerTriEl].forEach(el =>
+      el.classList.remove('maxed'));
+
+    // Everything outside the zoom-ring timeline begins hidden. The zoom-ring
+    // steps reset their own targets when runTimeline() starts.
+    readoutEl.style.opacity = 0;
+    valueEl.style.color = COL_BRIGHT;
+    eyebrowEl.style.color = COL_BRIGHT;
+
+    fovSegments.forEach(({ el }) => { el.style.opacity = 0; });
+    fovTicks.forEach(({ el }) => { el.style.opacity = 0; });
+    fovLabels.forEach(({ el }) => { el.style.opacity = 0; });
+    zoomLabels.forEach(({ el }) => { el.style.opacity = 0; });
+
+    fovRingEl.style.transform = `rotate(${FOV_START_ANGLE}deg)`;
+    positionFovLabels(FOV_START_ANGLE);
+  }
+
+  function runStartupSequence(){
+    if (sequenceActive) return;
+    sequenceActive = true;
+
+    resetDisplayState();
+    runTimeline(zoomRingSteps, runFovPhase);
+  }
+"""
+
+          if text.count(old_dead_zone_seed) != 1:
+              raise SystemExit('Expected dead-zone seed block was not found exactly once')
+          if text.count(old_startup) != 1:
+              raise SystemExit('Expected startup block was not found exactly once')
+
+          text = text.replace(old_dead_zone_seed, '', 1)
+          text = text.replace(old_startup, new_startup, 1)
+          path.write_text(text)
+          PY
+
+      - name: Commit patch and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/workflows/apply-display-reset.yml
+          git add dial2.html .github/workflows/apply-display-reset.yml
+          git commit -m "Centralize startup display reset"
+          git push

@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<!-- saved from url=(0014)about:internet -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<title>Payload Zoom Dial</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+
+  :root{
+    --phosphor:#39ff6b;
+    --phosphor-bright:#a6ffb8;
+    --phosphor-mid:#1c8f38;
+    --phosphor-dim:#0c3a18;
+    --glass:#020602;
+    --alert:#ff2d2d;
+  }
+
+  *{box-sizing:border-box;}
+
+  body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#08090a;
+    font-family:'Share Tech Mono', monospace;
+  }
+
+  .stage{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:16px;
+  }
+
+  /* ---------- bezel ---------- */
+
+  .bezel{
+    position:relative;
+    width:300px;
+    height:300px;
+    border-radius:50%;
+    background:
+      radial-gradient(circle at 35% 30%, #2a2c29 0%, #171815 55%, #0c0d0b 100%);
+    box-shadow:
+      0 0 0 2px #000,
+      0 18px 40px rgba(0,0,0,0.7),
+      inset 0 2px 3px rgba(255,255,255,0.03);
+  }
+
+  .screen{
+    position:absolute;
+    top:22px; left:22px; right:22px; bottom:22px;
+    border-radius:50%;
+    background:radial-gradient(circle at 50% 45%, #050a05 0%, var(--glass) 100%);
+    box-shadow:
+      inset 0 0 0 1px #000,
+      inset 0 0 22px rgba(0,0,0,0.95),
+      inset 0 0 40px rgba(0,0,0,0.6);
+    overflow:hidden;
+    cursor:grab;
+    touch-action:none;
+  }
+  .screen:active{cursor:grabbing;}
+  .screen:focus-visible{
+    outline:2px solid var(--phosphor);
+    outline-offset:3px;
+  }
+
+  svg{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    z-index:1;
+  }
+
+  /* ---------- rings ---------- */
+
+  #ring{transform-origin:120px 120px;}
+  #fovRing{transform-origin:120px 120px;}
+
+  .fov-tick{
+    stroke:var(--glass);
+    stroke-width:1.5;
+  }
+  .fov-label{
+    fill:var(--glass);
+    font-family:'Share Tech Mono', monospace;
+    font-size:9px;
+    text-anchor:middle;
+    dominant-baseline:middle;
+  }
+  .fov-label-fixed{
+    fill:var(--glass);
+    font-family:'Share Tech Mono', monospace;
+    font-size:9px;
+    text-anchor:middle;
+    dominant-baseline:middle;
+  }
+
+  .tick{stroke:var(--phosphor-dim); stroke-width:1.5;}
+  .tick.major{
+    stroke:var(--phosphor-mid);
+    stroke-width:2;
+    filter:drop-shadow(0 0 2px rgba(57,255,107,0.5));
+  }
+  /* minor ticks invert where the fill arc has swept past them */
+  .tick.covered{stroke:var(--glass);}
+
+  .ticklabel{
+    fill:var(--phosphor-mid);
+    font-family:'Share Tech Mono', monospace;
+    font-size:12px;
+    text-anchor:middle;
+    dominant-baseline:middle;
+  }
+
+  #greebleTrack{
+    stroke:var(--phosphor-dim);
+    opacity:0.4;
+  }
+  #greebleFill{
+    stroke:var(--phosphor);
+    filter:drop-shadow(0 0 3px rgba(57,255,107,0.85));
+  }
+  #deadZone{
+    stroke:var(--alert);
+    filter:drop-shadow(0 0 3px rgba(255,45,45,0.7));
+  }
+
+  /* ---------- fixed pointer ---------- */
+
+  /* hollow rectangle: outer path clockwise, inner path traced the same
+     direction so evenodd knocks it out, leaving a 2px frame */
+  #pointerBox{
+    position:absolute;
+    top:50px; left:50%;
+    width:25px; height:36px;
+    transform:translateX(-50%);
+    background:var(--phosphor);
+    opacity:0.75;
+    z-index:5;
+    clip-path:polygon(evenodd,
+      0px 0px,
+      25px 0px,
+      25px 36px,
+      0px 36px,
+      0px 0px,
+
+      2px 2px,
+      23px 2px,
+      23px 34px,
+      2px 34px,
+      2px 2px
+    );
+  }
+  #pointerBox.maxed{
+    background:var(--alert);
+    opacity:1;
+  }
+
+  #pointerCaret{
+    position:absolute;
+    top:25px; left:50%;
+    width:18px; height:25px;
+    transform:translateX(-50%);
+    background:var(--phosphor);
+    z-index:1;
+    clip-path:polygon(50% 100%, 0 0, 100% 0);
+  }
+  #pointerCaret.maxed{
+    background:var(--alert);
+  }
+
+  /* ---------- centre readout ---------- */
+
+  .readout{
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-54%);
+    text-align:center;
+    pointer-events:none;
+    z-index:2;
+  }
+
+  .eyebrow{
+    font-family:'VT323', monospace;
+    font-size:20px;
+    letter-spacing:0.1em;
+    color:var(--phosphor-mid);
+    line-height:150%;
+  }
+  .eyebrow.maxed{color:var(--alert);}
+
+  .value{
+    font-family:'VT323', monospace;
+    font-size:60px;
+    color:var(--phosphor);
+    line-height:0.75;
+    font-variant-numeric:tabular-nums;
+    text-shadow:
+      0 0 4px rgba(57,255,107,0.9),
+      0 0 14px rgba(57,255,107,0.5);
+  }
+  .value.maxed{
+    background:var(--alert);
+    color:#000;
+    text-shadow:
+      0 0 4px rgba(255,45,45,0.9),
+      0 0 14px rgba(255,45,45,0.5);
+  }
+
+  .fov-box{
+    display:inline-block;
+    margin-top:3px;
+    padding:0 2px;
+    background:var(--phosphor);
+    color:var(--glass);
+    font-family:'VT323', monospace;
+    font-size:26px;
+    line-height:0.8;
+    font-variant-numeric:tabular-nums;
+    box-shadow:0 0 6px rgba(57,255,107,0.5);
+  }
+  .fov-box.maxed{
+    background:#000;
+    color:var(--alert);
+    box-shadow:none;
+  }
+  /* everything the sequence reveals starts invisible */
+  #pointerBox, #pointerCaret,
+  .readout,
+  .fov-annulus-seg, .fov-tick, .fov-label-fixed,
+  #zoomLabels text{
+    opacity:0;
+  }
+
+  .replay-btn{
+    font-family:'Share Tech Mono', monospace;
+    font-size:12px; letter-spacing:0.15em; text-transform:uppercase;
+    background:var(--phosphor-dim); color:var(--phosphor-bright);
+    border:1px solid var(--phosphor-mid); padding:8px 20px;
+    cursor:pointer;
+  }
+  .replay-btn:hover{ background:var(--phosphor-mid); color:#000; }
+</style>
+<style type="text/css"></style></head>
+<body>
+
+  <div class="stage">
+    <div class="bezel">
+      <div class="screen" id="screen" tabindex="0" role="slider" aria-label="Payload zoom control" aria-valuemin="24" aria-valuemax="300" aria-valuenow="24.0">
+        <svg viewBox="0 0 240 240">
+          <circle id="greebleTrack" cx="120" cy="120" r="100.5" fill="none" stroke-width="7" style=""></circle>
+          <circle id="greebleFill" cx="120" cy="120" r="100.5" fill="none" stroke-width="7" stroke-linecap="butt" transform="rotate(-90 120 120)" stroke-dasharray="0 631.4601233715484"></circle>
+          <g id="fovRing" style="transform: rotate(0deg);"><path d="M 93.77753846088615 55.09713018032488 A 70 70 0 0 1 147.35117899424918 55.564660258329184" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="96.39978461479754" y1="61.58741716229239" x2="91.52989890039069" y2="49.53402705292416" class="fov-tick" style="opacity: 1;"></line><path d="M 147.35117899424918 55.564660258329184 A 70 70 0 0 1 184.90286981967512 93.77753846088616" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="144.61606109482426" y1="62.008194232496265" x2="149.69556576518482" y2="50.041631137614544" class="fov-tick" style="opacity: 1;"></line><path d="M 184.90286981967512 93.77753846088616 A 70 70 0 0 1 184.43533974167082 147.35117899424915" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="178.41258283770762" y1="96.39978461479754" x2="190.46597294707584" y2="91.52989890039069" class="fov-tick" style="opacity: 1;"></line><path d="M 184.43533974167082 147.35117899424915 A 70 70 0 0 1 146.22246153911385 184.90286981967512" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="177.99180576750373" y1="144.61606109482423" x2="189.95836886238547" y2="149.6955657651848" class="fov-tick" style="opacity: 1;"></line><path d="M 146.22246153911385 184.90286981967512 A 70 70 0 0 1 92.64882100575085 184.43533974167082" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="143.60021538520246" y1="178.41258283770762" x2="148.4701010996093" y2="190.46597294707584" class="fov-tick" style="opacity: 1;"></line><path d="M 92.64882100575085 184.43533974167082 A 70 70 0 0 1 55.09713018032488 146.22246153911385" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="95.38393890517577" y1="177.99180576750373" x2="90.3044342348152" y2="189.95836886238547" class="fov-tick" style="opacity: 1;"></line><path d="M 55.09713018032488 146.22246153911385 A 70 70 0 0 1 55.56466025832917 92.64882100575085" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="61.5874171622924" y1="143.60021538520246" x2="49.53402705292416" y2="148.47010109960934" class="fov-tick" style="opacity: 1;"></line><path d="M 55.56466025832917 92.64882100575085 A 70 70 0 0 1 93.77753846088613 55.09713018032488" class="fov-annulus-seg" fill="none" stroke="var(--phosphor-mid)" stroke-width="16" style="opacity: 1;"></path><line x1="62.00819423249626" y1="95.38393890517577" x2="50.04163113761453" y2="90.3044342348152" class="fov-tick" style="opacity: 1;"></line></g>
+          <circle id="deadZone" cx="120" cy="120" r="100.5" stroke-width="7" stroke-linecap="butt" fill="none" transform="rotate(270 120 120)" stroke-dasharray="0 631.4601233715484"></circle><g id="ring" style="transform: rotate(0deg);"><line x1="120" y1="26.5" x2="120" y2="12.5" class="tick major" style=""></line><line x1="138.92376123556446" y1="24.863827800886654" x2="140.28939348967734" y2="17.998330838064035" class="tick" style="opacity: 1;"></line><line x1="157.12029293941373" y1="30.383685346405187" x2="159.79907696596933" y2="23.916528618826177" class="tick" style="opacity: 1;"></line><line x1="173.89031260290142" y1="39.347447606653105" x2="177.77930423403865" y2="33.5271603205353" class="tick" style="opacity: 1;"></line><line x1="186.11448404094222" y1="53.88551595905781" x2="196.01397897755385" y2="43.98602102244615" class="tick major" style=""></line><line x1="200.6525523933469" y1="66.10968739709858" x2="206.4728396794647" y2="62.22069576596137" class="tick" style="opacity: 1;"></line><line x1="209.61631465359483" y1="82.8797070605863" x2="216.0834713811738" y2="80.20092303403067" class="tick" style="opacity: 1;"></line><line x1="215.13617219911333" y1="101.07623876443556" x2="222.00166916193598" y2="99.71060651032266" class="tick" style="opacity: 1;"></line><line x1="213.5" y1="120" x2="227.5" y2="120" class="tick major" style=""></line><line x1="215.13617219911333" y1="138.92376123556443" x2="222.00166916193598" y2="140.28939348967734" class="tick" style="opacity: 1;"></line><line x1="209.61631465359483" y1="157.1202929394137" x2="216.0834713811738" y2="159.79907696596933" class="tick" style="opacity: 1;"></line><line x1="200.6525523933469" y1="173.89031260290142" x2="206.4728396794647" y2="177.77930423403862" class="tick" style="opacity: 1;"></line><line x1="186.11448404094222" y1="186.1144840409422" x2="196.01397897755385" y2="196.01397897755385" class="tick major" style=""></line><line x1="173.89031260290142" y1="200.6525523933469" x2="177.77930423403865" y2="206.4728396794647" class="tick" style="opacity: 1;"></line><line x1="157.12029293941373" y1="209.61631465359483" x2="159.79907696596933" y2="216.0834713811738" class="tick" style="opacity: 1;"></line><line x1="138.92376123556446" y1="215.13617219911333" x2="140.28939348967734" y2="222.00166916193598" class="tick" style="opacity: 1;"></line><line x1="120" y1="213.5" x2="120" y2="227.5" class="tick major" style=""></line><line x1="101.07623876443559" y1="215.13617219911336" x2="99.71060651032269" y2="222.00166916193598" class="tick" style="opacity: 1;"></line><line x1="82.8797070605863" y1="209.61631465359483" x2="80.20092303403067" y2="216.0834713811738" class="tick" style="opacity: 1;"></line><line x1="66.10968739709858" y1="200.65255239334687" x2="62.22069576596136" y2="206.4728396794647" class="tick" style="opacity: 1;"></line><line x1="53.88551595905781" y1="186.11448404094222" x2="43.98602102244615" y2="196.01397897755385" class="tick major" style=""></line><line x1="39.347447606653105" y1="173.89031260290142" x2="33.52716032053529" y2="177.77930423403862" class="tick" style="opacity: 1;"></line><line x1="30.383685346405187" y1="157.12029293941373" x2="23.916528618826177" y2="159.79907696596933" class="tick" style="opacity: 1;"></line><line x1="24.863827800886654" y1="138.92376123556443" x2="17.998330838064035" y2="140.28939348967734" class="tick" style="opacity: 1;"></line><line x1="26.5" y1="120.00000000000001" x2="12.5" y2="120.00000000000001" class="tick major" style=""></line><line x1="24.86382780088664" y1="101.0762387644356" x2="17.99833083806402" y2="99.71060651032269" class="tick" style="opacity: 1;"></line><line x1="30.38368534640516" y1="82.87970706058636" x2="23.916528618826163" y2="80.20092303403072" class="tick" style="opacity: 1;"></line><line x1="39.347447606653105" y1="66.10968739709858" x2="33.5271603205353" y2="62.22069576596136" class="tick" style="opacity: 1;"></line><line x1="53.8855159590578" y1="53.88551595905781" x2="43.986021022446124" y2="43.98602102244615" class="tick major" style=""></line><line x1="66.10968739709851" y1="39.34744760665316" x2="62.220695765961295" y2="33.527160320535344" class="tick" style="opacity: 1;"></line><line x1="82.87970706058633" y1="30.383685346405173" x2="80.2009230340307" y2="23.916528618826163" class="tick" style="opacity: 1;"></line><line x1="101.07623876443552" y1="24.863827800886654" x2="99.71060651032262" y2="17.99833083806405" class="tick" style="opacity: 1;"></line></g>
+          <g id="zoomLabels"><text class="ticklabel" x="120" y="35" transform="rotate(0 120 35)" style="opacity: 1;">24</text><text class="ticklabel" x="180.10407640085654" y="59.895923599143465" transform="rotate(45 180.10407640085654 59.895923599143465)" style="opacity: 1;">300</text><text class="ticklabel" x="205" y="120" transform="rotate(90 205 120)" style="opacity: 1;">200</text><text class="ticklabel" x="180.10407640085654" y="180.10407640085654" transform="rotate(135 180.10407640085654 180.10407640085654)" style="opacity: 1;">135</text><text class="ticklabel" x="120" y="205" transform="rotate(180 120 205)" style="opacity: 1;">100</text><text class="ticklabel" x="59.895923599143465" y="180.10407640085654" transform="rotate(225 59.895923599143465 180.10407640085654)" style="opacity: 1;">70</text><text class="ticklabel" x="35" y="120.00000000000001" transform="rotate(270 35 120.00000000000001)" style="opacity: 1;">50</text><text class="ticklabel" x="59.895923599143444" y="59.895923599143465" transform="rotate(315 59.895923599143444 59.895923599143465)" style="opacity: 1;">35</text></g>
+          <g id="fovLabelsFixed"><text x="120.61085748488617" y="50.00266538550801" class="fov-label-fixed" transform="rotate(0.5 120.61085748488617 50.00266538550801)" style="opacity: 1;">84</text><text x="169.9275314407927" y="70.93635149901044" class="fov-label-fixed" transform="rotate(45.5 169.9275314407927 70.93635149901044)" style="opacity: 1;">65</text><text x="189.997334614492" y="120.61085748488618" class="fov-label-fixed" transform="rotate(90.5 189.997334614492 120.61085748488618)" style="opacity: 1;">50</text><text x="169.06364850098956" y="169.9275314407927" class="fov-label-fixed" transform="rotate(135.5 169.06364850098956 169.9275314407927)" style="opacity: 1;">28</text><text x="119.38914251511383" y="189.997334614492" class="fov-label-fixed" transform="rotate(180.5 119.38914251511383 189.997334614492)" style="opacity: 1;">20</text><text x="70.0724685592073" y="169.0636485009896" class="fov-label-fixed" transform="rotate(225.5 70.0724685592073 169.0636485009896)" style="opacity: 1;">14</text><text x="50.00266538550801" y="119.38914251511385" class="fov-label-fixed" transform="rotate(270.5 50.00266538550801 119.38914251511385)" style="opacity: 1;">10</text><text x="70.93635149901044" y="70.07246855920728" class="fov-label-fixed" transform="rotate(315.5 70.93635149901044 70.07246855920728)" style="opacity: 1;">4</text></g>
+        </svg>
+        <div class="readout" style="opacity: 1;">
+          <div class="eyebrow" id="eyebrowBox" style="">EO LENS</div>
+          <div class="value" id="value" style="">024MM</div>
+          <div class="fov-box" id="fovBox">FOV 84°</div>
+        </div>
+      </div>
+
+      <div id="pointerBox" style="opacity: 1; background: rgb(57, 255, 107);"></div>
+      <div id="pointerCaret" style="opacity: 1; background: rgb(57, 255, 107);"></div>
+    </div>
+    <button class="replay-btn" id="replayBtn">Replay Startup</button>
+  </div>
+
+<script>
+  // ---------- geometry ----------
+
+  const cx = 120, cy = 120;
+  const rOuter = 104, rMinor = 97, rLabel = 85;
+
+  // major ticks are recentred on the fill band (97\u2013104, midpoint 100.5)
+  // rather than flush with its outer edge — same total length as before,
+  // just repositioned so they clear the labels on the inside and poke a
+  // little past the ring's rim on the outside
+  const rMajorIn = 93.5, rMajorOut = 107.5;
+
+  // the arc the fill/deadzone are stroked on
+  const rFillBand = 100.5;
+  const gCircumference = 2 * Math.PI * rFillBand;
+
+  // rotation at which 300mm reaches the pointer — 7 of 8 stops round
+  const STOP_300 = 315;
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+
+  function polar(r, deg){
+    const rad = (deg - 90) * Math.PI / 180;
+    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+  }
+
+  // ---------- elements ----------
+
+  const screenEl     = document.getElementById('screen');
+  const ringEl       = document.getElementById('ring');
+  const fovRingEl    = document.getElementById('fovRing');
+  const zoomLabelsEl = document.getElementById('zoomLabels');
+  const greebleTrackEl = document.getElementById('greebleTrack');
+  const greebleFillEl= document.getElementById('greebleFill');
+  const valueEl      = document.getElementById('value');
+  const fovBoxEl     = document.getElementById('fovBox');
+  const eyebrowEl    = document.getElementById('eyebrowBox');
+  const pointerBoxEl = document.getElementById('pointerBox');
+  const pointerTriEl = document.getElementById('pointerCaret');
+  const readoutEl    = document.querySelector('.readout');
+  const replayBtn    = document.getElementById('replayBtn');
+
+  // ---------- zoom ring ----------
+
+  const majors = [24, 300, 200, 135, 100, 70, 50, 35];
+  const step = 360 / majors.length;   // 45°
+  const minorPerGap = 3;
+
+  const zoomLabels = [];
+  const minorTicks = [];
+
+  for (let i = 0; i < majors.length; i++){
+    const angle = i * step;
+
+    const [x1,y1] = polar(rMajorIn, angle);
+    const [x2,y2] = polar(rMajorOut, angle);
+    const line = document.createElementNS(svgNS,'line');
+    line.setAttribute('x1',x1); line.setAttribute('y1',y1);
+    line.setAttribute('x2',x2); line.setAttribute('y2',y2);
+    line.setAttribute('class','tick major');
+    ringEl.appendChild(line);
+
+    // Labels live in a fixed group rather than inside #ring, so they can
+    // stop following the ring once it overruns past 300mm. Their position
+    // is computed per-frame in render().
+    const text = document.createElementNS(svgNS,'text');
+    text.setAttribute('class','ticklabel');
+    text.textContent = majors[i];
+    zoomLabelsEl.appendChild(text);
+    zoomLabels.push({ el: text, baseAngle: angle });
+
+    for (let m = 1; m <= minorPerGap; m++){
+      const mAngle = angle + (step / (minorPerGap + 1)) * m;
+      const [mx1,my1] = polar(rMinor, mAngle);
+      const [mx2,my2] = polar(rOuter, mAngle);
+      const mline = document.createElementNS(svgNS,'line');
+      mline.setAttribute('x1',mx1); mline.setAttribute('y1',my1);
+      mline.setAttribute('x2',mx2); mline.setAttribute('y2',my2);
+      mline.setAttribute('class','tick');
+      ringEl.appendChild(mline);
+      minorTicks.push({ el: mline, angle: mAngle });
+    }
+  }
+
+  // Dead zone — the red arc revealed during the overrun past 300mm.
+  // Fixed in screen space like the green fill (not parented to #ring),
+  // anchored so its dash starts at the pointer.
+  const deadZoneEl = document.createElementNS(svgNS, 'circle');
+  deadZoneEl.setAttribute('id', 'deadZone');
+  deadZoneEl.setAttribute('cx', cx);
+  deadZoneEl.setAttribute('cy', cy);
+  deadZoneEl.setAttribute('r', rFillBand);
+  deadZoneEl.setAttribute('stroke-width', 7);
+  deadZoneEl.setAttribute('stroke-linecap', 'butt');
+  deadZoneEl.setAttribute('fill', 'none');
+  deadZoneEl.setAttribute('transform', `rotate(270 ${cx} ${cy})`);
+  screenEl.querySelector('svg').insertBefore(deadZoneEl, ringEl);
+
+  // gathered once here rather than re-queried each sequence run
+  const majorTickEls = Array.from(ringEl.querySelectorAll('.tick.major'));
+
+  // ---------- FOV ring ----------
+
+  // Same 8 stops at 45° as the zoom ring, so the two stay paired: 84°
+  // sits at the pointer when 24mm does, 4° when 300mm does.
+  const fovValues = [84, 65, 50, 28, 20, 14, 10, 4];
+  const fovCount = fovValues.length;
+  const fovStep = 360 / fovCount;     // 45°
+  // Visual offset only — shifts the drawn ticks off the zoom grid so the
+  // two rings don't share tick angles. Does not affect the readout.
+  const fovPhase = -22;
+  const rFovIn = 62, rFovOut = 78;
+  const rFovMid = (rFovIn + rFovOut) / 2;
+  const rFovTick = rFovOut - 2;
+
+  const fovLabelsFixedEl = document.getElementById('fovLabelsFixed');
+
+  // Band segments (one per fovStep sector) + ticks + fixed labels. Split
+  // into discrete pieces rather than one continuous annulus/dasharray so
+  // the startup sequence can reveal them one sector at a time instead of
+  // a smooth sweep.
+  const fovSegments = [];  // {el, revealAngle}
+  const fovTicks = [];     // {el, revealAngle}
+  const fovLabels = [];    // {el, revealAngle}
+
+  function arcPath(r, startDeg, endDeg){
+    const large = ((endDeg - startDeg + 360) % 360) > 180 ? 1 : 0;
+    const [x1,y1] = polar(r, startDeg);
+    const [x2,y2] = polar(r, endDeg);
+    return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
+  }
+
+  for (let k = 0; k < fovCount; k++){
+    const fAngle = fovPhase + k * fovStep;
+
+    // this sector's band segment
+    const seg = document.createElementNS(svgNS, 'path');
+    seg.setAttribute('d', arcPath(rFovMid, fAngle, fAngle + fovStep));
+    seg.setAttribute('class', 'fov-annulus-seg');
+    seg.setAttribute('fill', 'none');
+    seg.setAttribute('stroke', 'var(--phosphor-mid)');
+    seg.setAttribute('stroke-width', rFovOut - rFovIn);
+    fovRingEl.appendChild(seg);
+    fovSegments.push({ el: seg, revealAngle: fAngle + fovStep });
+
+    // the tick at this sector's trailing edge
+    const [fx1, fy1] = polar(rFovIn + 1, fAngle);
+    const [fx2, fy2] = polar(rFovTick, fAngle);
+    const ftick = document.createElementNS(svgNS, 'line');
+    ftick.setAttribute('x1', fx1); ftick.setAttribute('y1', fy1);
+    ftick.setAttribute('x2', fx2); ftick.setAttribute('y2', fy2);
+    ftick.setAttribute('class', 'fov-tick');
+    fovRingEl.appendChild(ftick);
+    fovTicks.push({ el: ftick, revealAngle: fAngle });
+
+    // Label lives in the FIXED group at its true final world angle
+    // (fovPhase + k*step + halfStep — same position it would occupy once
+    // fovRingEl finishes its correction rotation back to rest). It never
+    // moves; only its opacity changes as the sweep passes under it.
+    const trueAngle = fovPhase + k * fovStep + fovStep / 2; // world angle at rest (rotation 0)
+    const [flx, fly] = polar(rFovMid, trueAngle);
+    const flabel = document.createElementNS(svgNS, 'text');
+    flabel.setAttribute('x', flx); flabel.setAttribute('y', fly);
+    flabel.setAttribute('class', 'fov-label-fixed');
+    flabel.setAttribute('transform', `rotate(${trueAngle} ${flx} ${fly})`);
+    flabel.textContent = fovValues[k];
+    fovLabelsFixedEl.appendChild(flabel);
+    fovLabels.push({ el: flabel, revealAngle: fAngle + fovStep });
+  }
+
+  function positionFovLabels(startupOffset = 0){
+    fovLabels.forEach(({ el }, k) => {
+      const localAngle =
+        fovPhase +
+        k * fovStep +
+        fovStep / 2;
+
+      const worldAngle = localAngle + startupOffset;
+      const [lx, ly] = polar(rFovMid, worldAngle);
+
+      el.setAttribute('x', lx);
+      el.setAttribute('y', ly);
+      el.setAttribute(
+        'transform',
+        `rotate(${worldAngle} ${lx} ${ly})`
+      );
+    });
+  }
+
+  // ---------- state ----------
+
+  let rotation = 0;
+
+  // 0 is the 24mm stop. 360 is that same stop reached the long way round,
+  // after overrunning past 300mm — hence a full turn of travel, not 315.
+  function clampRotation(r){
+    return Math.max(0, Math.min(360, r));
+  }
+
+  // Smoothly interpolated focal length at the pointer — no snapping.
+  function continuousValue(rot){
+    const norm = ((-rot % 360) + 360) % 360;
+    const idx = Math.floor(norm / step);
+    const frac = (norm % step) / step;
+    const a = majors[idx];
+    const b = majors[(idx + 1) % majors.length];
+    return a + (b - a) * frac;
+  }
+
+  // Same idea for the FOV ring. Reads from the ring's own grid, so it
+  // ignores fovPhase (which only shifts where ticks are drawn).
+  function fovValueAt(fovInput){
+    const norm = ((fovInput % 360) + 360) % 360;
+    const idx = Math.floor(norm / fovStep);
+    const frac = (norm % fovStep) / fovStep;
+    const a = fovValues[idx];
+    const b = fovValues[(idx + 1) % fovCount];
+    return a + (b - a) * frac;
+  }
+
+  // ---------- render ----------
+
+  function render(){
+    ringEl.style.transform = `rotate(${rotation}deg)`;
+
+    // Past STOP_300 the readouts and both sets of numbers freeze, while
+    // the ring itself keeps turning — that's what exposes the dead zone.
+    const frozen = Math.min(rotation, STOP_300);
+    const atMax = rotation >= STOP_300;
+
+    zoomLabels.forEach(({ el, baseAngle }) => {
+      const worldAngle = baseAngle + frozen;
+      const [lx, ly] = polar(rLabel, worldAngle);
+      el.setAttribute('x', lx);
+      el.setAttribute('y', ly);
+      el.setAttribute('transform', `rotate(${worldAngle} ${lx} ${ly})`);
+    });
+
+    fovRingEl.style.transform = `rotate(${-frozen}deg)`;
+
+    // FOV labels live in a fixed group (so the startup sequence can hold
+    // them still during the sweep reveal), so they need the same kind of
+    // per-frame repositioning the zoom labels get — just following the
+    // ring's counter-rotation instead.
+    fovLabels.forEach(({ el }, k) => {
+      const localAngle = fovPhase + k * fovStep + fovStep / 2;
+      const worldAngle = localAngle - frozen;
+      const [lx, ly] = polar(rFovMid, worldAngle);
+      el.setAttribute('x', lx);
+      el.setAttribute('y', ly);
+      el.setAttribute('transform', `rotate(${worldAngle} ${lx} ${ly})`);
+    });
+
+    const val = atMax ? 300 : continuousValue(rotation);
+    valueEl.textContent = `${Math.round(val).toString().padStart(3,'0')}MM`;
+    fovBoxEl.textContent = `FOV ${fovValueAt(frozen).toFixed(0)}°`;
+    eyebrowEl.textContent = atMax ? 'MAX ZOOM' : 'EO LENS';
+
+    valueEl.classList.toggle('maxed', atMax);
+    fovBoxEl.classList.toggle('maxed', atMax);
+    eyebrowEl.classList.toggle('maxed', atMax);
+    pointerBoxEl.classList.toggle('maxed', atMax);
+    pointerTriEl.classList.toggle('maxed', atMax);
+
+    screenEl.setAttribute('aria-valuenow', val.toFixed(1));
+
+    // Green sweeps from the pointer to wherever the ring has turned to.
+    const greenLen = (rotation / 360) * gCircumference;
+    greebleFillEl.setAttribute('stroke-dasharray', `${greenLen} ${gCircumference}`);
+
+    // Red covers only the overrun portion, laid over the green.
+    const revealDeg = Math.max(0, rotation - STOP_300);
+    const revealLen = (revealDeg / 360) * gCircumference;
+    deadZoneEl.setAttribute('stroke-dasharray', `${revealLen} ${gCircumference}`);
+
+    // A minor tick inverts once the fill has swept past it.
+    minorTicks.forEach(({ el, angle }) => {
+      const absAngle = ((angle + rotation) % 360 + 360) % 360;
+      el.classList.toggle('covered', absAngle < rotation);
+    });
+  }
+
+  // ---------- input ----------
+
+  let dragging = false;
+  let startPointerAngle = 0;
+  let startRotation = 0;
+
+  function angleFromEvent(e){
+    const rect = screenEl.getBoundingClientRect();
+    const px = (e.clientX ?? e.touches?.[0]?.clientX) - (rect.left + rect.width / 2);
+    const py = (e.clientY ?? e.touches?.[0]?.clientY) - (rect.top + rect.height / 2);
+    return Math.atan2(py, px) * 180 / Math.PI;
+  }
+
+  function onDown(e){
+    if (sequenceActive) return;
+    dragging = true;
+    startPointerAngle = angleFromEvent(e);
+    startRotation = rotation;
+    screenEl.focus();
+  }
+
+  function onMove(e){
+    if (!dragging) return;
+    rotation = clampRotation(startRotation + (angleFromEvent(e) - startPointerAngle));
+    render();
+  }
+
+  function onUp(){
+    dragging = false;   // no snap — stays where released
+  }
+
+  function nudge(delta){
+    if (sequenceActive) return;
+    rotation = clampRotation(rotation + delta);
+    render();
+  }
+
+  screenEl.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  screenEl.addEventListener('touchstart', onDown, {passive:true});
+  window.addEventListener('touchmove', onMove, {passive:true});
+  window.addEventListener('touchend', onUp);
+
+  screenEl.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    nudge(e.deltaY > 0 ? -3 : 3);
+  }, {passive:false});
+
+  screenEl.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp'){
+      nudge(-3); e.preventDefault();
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown'){
+      nudge(3); e.preventDefault();
+    }
+  });
+
+  // ---------- startup sequence ----------
+
+  // Design tokens duplicated from CSS as hex, since colour lerping needs
+  // numeric channels — keep these in sync with :root if the palette changes.
+  const COL_BRIGHT = '#a6ffb8';
+  const COL_NORMAL = '#39ff6b';
+  const COL_MID    = '#1c8f38';
+  const COL_DIM    = '#0c3a18';
+
+  function lerpColor(hexA, hexB, t){
+    const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
+    const ar=(a>>16)&255, ag=(a>>8)&255, ab=a&255;
+    const br=(b>>16)&255, bg=(b>>8)&255, bb=b&255;
+    const r = Math.round(ar+(br-ar)*t), g = Math.round(ag+(bg-ag)*t), bl = Math.round(ab+(bb-ab)*t);
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  function shuffled(n){
+    const a = Array.from({length:n}, (_,i) => i);
+    for (let i = a.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+
+  // ==========================================================
+  // Sequence engine
+  // ==========================================================
+  //
+  // A step names a target, an effect, when it starts, and how long it
+  // runs. `start` is either an absolute ms offset, or a reference to
+  // another step: { after: 'stepId', at: 0.5 } means "50% through that
+  // step's own duration, added to its start" — which is what lets the
+  // relay-style cascade ("each begins as the previous is half-faded")
+  // read as a relationship instead of hand-computed magic numbers.
+  //
+  // Effects are swappable single-purpose functions with a `reset` (sets
+  // the pre-sequence state) and an `apply(targets, progress 0-1, params)`.
+  // Adding a new effect (e.g. a slot-machine number reveal) means writing
+  // one and referencing it in a step — nothing about the runner changes.
+  // Reordering or retiming steps means editing the step list, not code.
+
+  function resolveStarts(steps){
+    const byId = {};
+    steps.forEach(s => { byId[s.id] = s; });
+    steps.forEach(s => {
+      if (typeof s.start === 'number'){
+        s.resolvedStart = s.start;
+      } else {
+        const ref = byId[s.start.after];
+        if (!ref || ref.resolvedStart == null){
+          throw new Error(`Step "${s.id}" refers to "${s.start.after}" before it's resolved — list steps in dependency order.`);
+        }
+        s.resolvedStart = ref.resolvedStart + ref.duration * s.start.at;
+      }
+    });
+    return steps;
+  }
+
+  function sequenceEnd(steps){
+    return Math.max(...steps.map(s => s.resolvedStart + s.duration));
+  }
+
+  // Runs a resolved step list on its own requestAnimationFrame loop and
+  // calls onDone once every step has finished.
+  function runTimeline(steps, onDone){
+    steps.forEach(s => s.effect.reset(s.targets(), s.params));
+
+    const end = sequenceEnd(steps);
+    const t0 = performance.now();
+
+    function frame(now){
+      const t = now - t0;
+      steps.forEach(s => {
+        if (t < s.resolvedStart) return;
+        const p = Math.min(1, (t - s.resolvedStart) / s.duration);
+        s.effect.apply(s.targets(), p, s.params);
+      });
+      if (t < end) requestAnimationFrame(frame);
+      else onDone?.();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- effects ----------
+
+  // Bright flash, then settles to a normal colour (and optionally opacity).
+  const flashIn = {
+    reset(els){ els.forEach(el => { el.style.opacity = 0; }); },
+    apply(els, p, params){
+      const colorProp = params.colorProp || 'stroke';
+      const color = lerpColor(params.from ?? COL_BRIGHT, params.to, p);
+      els.forEach(el => {
+        el.style.opacity = params.opacityFrom != null
+          ? params.opacityFrom + (params.opacityTo - params.opacityFrom) * p
+          : 1;
+        el.style[colorProp] = color;
+      });
+    }
+  };
+
+  // Settles from one rotation angle to another — single eased move,
+  // e.g. correcting from a parked offset back to true rest.
+  const rotateIn = {
+    reset(els, params){ els.forEach(el => { el.style.transform = `rotate(${params.from}deg)`; }); },
+    apply(els, p, params){
+      const eased = params.ease ? params.ease(p) : p;
+      const angle = params.from + (params.to - params.from) * eased;
+      els.forEach(el => { el.style.transform = `rotate(${angle}deg)`; });
+      params.onUpdate?.(angle);
+    }
+  };
+
+  // Spins continuously through a fixed number of degrees before stopping
+  // — distinct from rotateIn's single settle, for a ring that visibly
+  // winds up rather than just eases into place.
+  const rotateAround = {
+    reset(els, params){ els.forEach(el => { el.style.transform = `rotate(${params.from ?? 0}deg)`; }); },
+    apply(els, p, params){
+      const eased = params.ease ? params.ease(p) : p;
+      const angle = (params.from ?? 0) + params.direction * params.degrees * eased;
+      els.forEach(el => { el.style.transform = `rotate(${angle}deg)`; });
+      params.onUpdate?.(angle);
+    }
+  };
+
+  // ==========================================================
+  // Sequence definition — zoom ring
+  // ==========================================================
+  //
+  // This is the only part in scope for this pass. Ring, then major ticks
+  // + pointer, then minor ticks — each starting at the 50% mark of the
+  // previous step's fade. To change the rhythm, edit T_CASCADE or the
+  // `at` fractions below; to change what a step does, swap its `effect`.
+
+  const T_CASCADE = 500; // shared fade duration
+
+  const zoomRingSteps = [
+    {
+      id: 'pointer', effect: flashIn, duration: T_CASCADE, start: 100,
+      targets: () => [pointerBoxEl, pointerTriEl],
+      params: { from: COL_BRIGHT, to: COL_NORMAL, colorProp: 'background' }
+    },
+    {
+      id: 'majors', effect: flashIn, duration: T_CASCADE, start: { after: 'pointer', at: 1 },
+      targets: () => majorTickEls,
+      params: { from: COL_BRIGHT, to: COL_MID }
+    },
+    {
+      id: 'minors', effect: flashIn, duration: T_CASCADE, start: { after: 'majors', at: 1 },
+      targets: () => minorTicks.map(t => t.el),
+      params: { from: COL_BRIGHT, to: COL_DIM }
+    },
+    {
+      id: 'ring', effect: flashIn, duration: T_CASCADE, start: { after: 'minors', at: 1 },
+      targets: () => [greebleTrackEl],
+      params: { from: COL_BRIGHT, to: COL_DIM, opacityFrom: 1, opacityTo: 0.4 }
+    }
+  ];
+
+  resolveStarts(zoomRingSteps);
+  const PHASE1_END = sequenceEnd(zoomRingSteps); // hands off to the FOV phase below
+
+  // Phase 2: FOV ring sweeps in from 2 o'clock, one of its 8 segments at
+  // a time; a random zoom label rides along with each segment reveal.
+  // Not yet rebuilt on the engine above — out of scope for this pass.
+  const FOV_START_ANGLE = 60; // 2 o'clock
+  const T_SWEEP   = 640;      // 80ms/segment \u00d7 8
+  const T_CORRECT = 250;      // settle back to true rest afterward
+
+  let sequenceActive = false;
+
+  function runStartupSequence(){
+    if (sequenceActive) return;
+    sequenceActive = true;
+    rotation = 0;
+
+    // clear maxed state left over from any prior interactive session —
+    // otherwise the red styling silently persists through the whole
+    // sequence instead of resetting to normal
+    [valueEl, fovBoxEl, eyebrowEl, pointerBoxEl, pointerTriEl].forEach(el =>
+      el.classList.remove('maxed'));
+
+    // --- reset everything outside the zoom ring's own scope ---
+    // (the zoom ring steps reset themselves via each effect's reset())
+    readoutEl.style.opacity = 0;
+    valueEl.style.color = COL_BRIGHT;
+    eyebrowEl.style.color = COL_BRIGHT;
+
+    fovSegments.forEach(({ el }) => { el.style.opacity = 0; });
+    fovTicks.forEach(({ el }) => { el.style.opacity = 0; });
+    fovLabels.forEach(({ el }) => { el.style.opacity = 0; });
+    zoomLabels.forEach(({ el }) => { el.style.opacity = 0; });
+
+    fovRingEl.style.transform = `rotate(${FOV_START_ANGLE}deg)`;
+    positionFovLabels(FOV_START_ANGLE);
+
+    runTimeline(zoomRingSteps, runFovPhase);
+  }
+
+  // FOV sweep, paired zoom-label reveals, and the correction rotation —
+  // unchanged logic from before, just re-homed to run as its own phase
+  // once the zoom ring's timeline (above) hands off to it.
+  function runFovPhase(){
+    const zoomRevealOrder = shuffled(zoomLabels.length);
+    let zoomRevealCursor = 0;
+    const revealedSegments = new Set();
+
+    const t0 = performance.now();
+
+    function frame(now){
+      const sweepT = now - t0;
+
+      readoutEl.style.opacity = 1;
+      const rp = Math.min(1, sweepT / T_SWEEP);
+      const readoutCol = lerpColor(COL_BRIGHT, COL_NORMAL, rp);
+      valueEl.style.color = readoutCol;
+      eyebrowEl.style.color = readoutCol;
+
+      const sweepAngle = Math.min(360, (sweepT / T_SWEEP) * 360);
+
+      fovSegments.forEach((seg, i) => {
+        if (seg.revealAngle <= sweepAngle && !revealedSegments.has(i)){
+          revealedSegments.add(i);
+          seg.el.style.opacity = 1;
+          fovTicks[i].el.style.opacity = 1;
+          fovLabels[i].el.style.opacity = 1;
+
+          // pull the next random zoom label along with this beat
+          if (zoomRevealCursor < zoomLabels.length){
+            zoomLabels[zoomRevealOrder[zoomRevealCursor]].el.style.opacity = 1;
+            zoomRevealCursor++;
+          }
+        }
+      });
+
+      // correction: FOV ring settles from 2 o'clock back to rest
+      if (sweepT >= T_SWEEP){
+        const cp = Math.min(1, (sweepT - T_SWEEP) / T_CORRECT);
+        const eased = easeOutCubic(cp);
+        const correctionAngle = FOV_START_ANGLE * (1 - eased);
+        fovRingEl.style.transform = `rotate(${correctionAngle}deg)`;
+        positionFovLabels(correctionAngle);
+      }
+
+      if (sweepT < T_SWEEP + T_CORRECT){
+        requestAnimationFrame(frame);
+      } else {
+        // hand off cleanly to normal interactive state
+        sequenceActive = false;
+        valueEl.style.color = '';
+        eyebrowEl.style.color = '';
+        greebleTrackEl.style.opacity = '';
+        greebleTrackEl.style.stroke = '';
+        majorTickEls.forEach(el => { el.style.opacity = ''; el.style.stroke = ''; });
+        minorTicks.forEach(({ el }) => { el.style.opacity = ''; el.style.stroke = ''; });
+        // zoomLabels default to opacity:0 in CSS (that's how they start
+        // hidden) — clearing their inline style would let that default
+        // reassert itself and hide them again right at handoff
+        zoomLabels.forEach(({ el }) => { el.style.opacity = 1; });
+        render();
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  replayBtn.addEventListener('click', runStartupSequence);
+  runStartupSequence();
+</script>
+
+
+</body></html>

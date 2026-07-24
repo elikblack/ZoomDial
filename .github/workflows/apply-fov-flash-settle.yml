@@ -1,0 +1,151 @@
+name: Apply FOV flash and settle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-fov-flash-settle.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore FOV flash reveal and settle
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('zoomdial-2-0.html')
+          text = path.read_text()
+
+          old_effect = """  // Reveals grouped FOV sectors in order while rotating the ring into place.
+  // Each target is an array, allowing a band segment and its tick to appear
+  // together as one editable sequence beat.
+  const sectorSweepIn = {
+    reset(groups, params){
+      groups.flat().forEach(el => { el.style.opacity = 0; });
+      const angle = params.fromAngle ?? 0;
+      params.ring.style.transform = `rotate(${angle}deg)`;
+      params.onUpdate?.(angle);
+    },
+    apply(groups, p, params){
+      const eased = params.ease ? params.ease(p) : p;
+      const visibleCount = Math.ceil(groups.length * p);
+      groups.forEach((group, i) => {
+        group.forEach(el => { el.style.opacity = i < visibleCount ? 1 : 0; });
+      });
+
+      const from = params.fromAngle ?? 0;
+      const to = params.toAngle ?? 0;
+      const angle = from + (to - from) * eased;
+      params.ring.style.transform = `rotate(${angle}deg)`;
+      params.onUpdate?.(angle);
+    }
+  };
+"""
+
+          new_effect = """  // Flashes grouped FOV sectors into view one at a time. The ring stays
+  // parked at its startup offset during the reveal; a separate rotation step
+  // settles it to true zero after every sector has loaded.
+  const sectorFlashIn = {
+    reset(groups, params){
+      groups.flat().forEach(el => {
+        el.style.opacity = 0;
+        el.style.stroke = '';
+      });
+      const angle = params.parkAngle ?? 0;
+      params.ring.style.transform = `rotate(${angle}deg)`;
+      params.onUpdate?.(angle);
+    },
+    apply(groups, p, params){
+      const scaled = p * groups.length;
+
+      groups.forEach((group, i) => {
+        const local = Math.max(0, Math.min(1, scaled - i));
+        if (local <= 0) return;
+
+        group.forEach(el => {
+          const target = el.classList.contains('fov-tick')
+            ? (params.tickTo ?? COL_GLASS)
+            : (params.segmentTo ?? COL_MID);
+          el.style.opacity = 1;
+          el.style.stroke = lerpColor(params.from ?? COL_BRIGHT, target, local);
+        });
+      });
+    }
+  };
+"""
+
+          old_constant = "  const FOV_START_ANGLE = 60;"
+          new_constant = "  const FOV_START_ANGLE = 30;"
+
+          old_step = """    // ----- FOV ring -----
+    {
+      id: 'fovRing', effect: sectorSweepIn, duration: 800, start: { after: 'ring', at: 0.75 },
+      targets: () => fovSegments.map((seg, i) => [seg.el, fovTicks[i].el]),
+      params: {
+        ring: fovRingEl,
+        fromAngle: FOV_START_ANGLE,
+        toAngle: 0,
+        ease: easeOutCubic,
+        onUpdate: positionFovLabels
+      }
+    },
+
+    // ----- FOV ring numbers -----
+"""
+
+          new_step = """    // ----- FOV ring -----
+    {
+      id: 'fovRing', effect: sectorFlashIn, duration: 800, start: { after: 'ring', at: 0.75 },
+      targets: () => fovSegments.map((seg, i) => [seg.el, fovTicks[i].el]),
+      params: {
+        ring: fovRingEl,
+        parkAngle: FOV_START_ANGLE,
+        from: COL_BRIGHT,
+        segmentTo: COL_MID,
+        tickTo: COL_GLASS,
+        onUpdate: positionFovLabels
+      }
+    },
+    {
+      id: 'fovSettle', effect: rotateIn, duration: 250, start: { after: 'fovRing', at: 1 },
+      targets: () => [fovRingEl],
+      params: {
+        from: FOV_START_ANGLE,
+        to: 0,
+        ease: easeOutCubic,
+        onUpdate: positionFovLabels
+      }
+    },
+
+    // ----- FOV ring numbers -----
+"""
+
+          replacements = [
+              (old_effect, new_effect, 'sector reveal effect'),
+              (old_constant, new_constant, 'FOV startup angle'),
+              (old_step, new_step, 'FOV sequence step'),
+          ]
+
+          for old, new, label in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'Expected {label} exactly once')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Commit patch and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/workflows/apply-fov-flash-settle.yml
+          git add zoomdial-2-0.html .github/workflows/apply-fov-flash-settle.yml
+          git commit -m "Restore FOV sector flash and zero settle"
+          git push

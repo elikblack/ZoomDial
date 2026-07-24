@@ -1,3 +1,4 @@
+# One-time migration. This file removes itself after applying the patch.
 name: Apply FOV flash and settle
 
 on:

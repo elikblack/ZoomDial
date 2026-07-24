@@ -738,30 +738,36 @@
     }
   };
 
-  // Reveals grouped FOV sectors in order while rotating the ring into place.
-  // Each target is an array, allowing a band segment and its tick to appear
-  // together as one editable sequence beat.
-  const sectorSweepIn = {
-    reset(groups, params){
-      groups.flat().forEach(el => { el.style.opacity = 0; });
-      const angle = params.fromAngle ?? 0;
-      params.ring.style.transform = `rotate(${angle}deg)`;
-      params.onUpdate?.(angle);
-    },
-    apply(groups, p, params){
-      const eased = params.ease ? params.ease(p) : p;
-      const visibleCount = Math.ceil(groups.length * p);
-      groups.forEach((group, i) => {
-        group.forEach(el => { el.style.opacity = i < visibleCount ? 1 : 0; });
-      });
+  // Flashes grouped FOV sectors into view one at a time. The ring stays
+// parked at its startup offset during the reveal; a separate rotation step
+// settles it to true zero after every sector has loaded.
+const sectorFlashIn = {
+  reset(groups, params){
+    groups.flat().forEach(el => {
+      el.style.opacity = 0;
+      el.style.stroke = '';
+    });
+    const angle = params.parkAngle ?? 0;
+    params.ring.style.transform = `rotate(${angle}deg)`;
+    params.onUpdate?.(angle);
+  },
+  apply(groups, p, params){
+    const scaled = p * groups.length;
 
-      const from = params.fromAngle ?? 0;
-      const to = params.toAngle ?? 0;
-      const angle = from + (to - from) * eased;
-      params.ring.style.transform = `rotate(${angle}deg)`;
-      params.onUpdate?.(angle);
-    }
-  };
+    groups.forEach((group, i) => {
+      const local = Math.max(0, Math.min(1, scaled - i));
+      if (local <= 0) return;
+
+      group.forEach(el => {
+        const target = el.classList.contains('fov-tick')
+          ? (params.tickTo ?? COL_GLASS)
+          : (params.segmentTo ?? COL_MID);
+        el.style.opacity = 1;
+        el.style.stroke = lerpColor(params.from ?? COL_BRIGHT, target, local);
+      });
+    });
+  }
+};
 
   // General-purpose rotation effects retained as additional options for
   // sequence experiments.
@@ -795,7 +801,7 @@
   // listed before the step that refers to it.
 
   const T_CASCADE = 500;
-  const FOV_START_ANGLE = 60;
+  const FOV_START_ANGLE = 30;
 
   const startupSteps = [
     // ----- zoom ring structure -----
@@ -829,12 +835,23 @@
 
     // ----- FOV ring -----
     {
-      id: 'fovRing', effect: sectorSweepIn, duration: 800, start: { after: 'ring', at: 0.75 },
+      id: 'fovRing', effect: sectorFlashIn, duration: 800, start: { after: 'ring', at: 0.75 },
       targets: () => fovSegments.map((seg, i) => [seg.el, fovTicks[i].el]),
       params: {
         ring: fovRingEl,
-        fromAngle: FOV_START_ANGLE,
-        toAngle: 0,
+        parkAngle: FOV_START_ANGLE,
+        from: COL_BRIGHT,
+        segmentTo: COL_MID,
+        tickTo: COL_GLASS,
+        onUpdate: positionFovLabels
+      }
+    },
+    {
+      id: 'fovSettle', effect: rotateIn, duration: 250, start: { after: 'fovRing', at: 1 },
+      targets: () => [fovRingEl],
+      params: {
+        from: FOV_START_ANGLE,
+        to: 0,
         ease: easeOutCubic,
         onUpdate: positionFovLabels
       }

@@ -4,8 +4,6 @@ name: Apply FOV flash and settle
 on:
   push:
     branches: [main]
-    paths:
-      - .github/workflows/apply-fov-flash-settle.yml
 
 permissions:
   contents: write

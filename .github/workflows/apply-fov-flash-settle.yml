@@ -1,0 +1,127 @@
+name: Apply FOV flash and settle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-fov-flash-settle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch zoomdial startup sequence
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('zoomdial-2-0.html')
+          text = path.read_text(encoding='utf-8')
+
+          effect_start_marker = '  // Reveals grouped FOV sectors in order while rotating the ring into place.'
+          effect_end_marker = '  // General-purpose rotation effects retained as additional options for'
+          step_start_marker = '    // ----- FOV ring -----'
+          step_end_marker = '    // ----- FOV ring numbers -----'
+
+          for marker in (effect_start_marker, effect_end_marker, step_start_marker, step_end_marker):
+              if marker not in text:
+                  raise SystemExit(f'Missing expected marker: {marker}')
+
+          effect_start = text.index(effect_start_marker)
+          effect_end = text.index(effect_end_marker, effect_start)
+
+          new_effect = '''  // Flashes grouped FOV sectors into view one at a time. The ring stays
+          // parked at its startup offset during the reveal; a separate rotation step
+          // settles it to true zero after every sector has loaded.
+          const sectorFlashIn = {
+            reset(groups, params){
+              groups.flat().forEach(el => {
+                el.style.opacity = 0;
+                el.style.stroke = '';
+              });
+              const angle = params.parkAngle ?? 0;
+              params.ring.style.transform = `rotate(${angle}deg)`;
+              params.onUpdate?.(angle);
+            },
+            apply(groups, p, params){
+              const scaled = p * groups.length;
+
+              groups.forEach((group, i) => {
+                const local = Math.max(0, Math.min(1, scaled - i));
+                if (local <= 0) return;
+
+                group.forEach(el => {
+                  const target = el.classList.contains('fov-tick')
+                    ? (params.tickTo ?? COL_GLASS)
+                    : (params.segmentTo ?? COL_MID);
+                  el.style.opacity = 1;
+                  el.style.stroke = lerpColor(params.from ?? COL_BRIGHT, target, local);
+                });
+              });
+            }
+          };
+
+          '''
+
+          text = text[:effect_start] + new_effect + text[effect_end:]
+
+          old_angle = '  const FOV_START_ANGLE = 60;'
+          if text.count(old_angle) != 1:
+              raise SystemExit(f'Expected one FOV angle declaration, found {text.count(old_angle)}')
+          text = text.replace(old_angle, '  const FOV_START_ANGLE = 30;', 1)
+
+          step_start = text.index(step_start_marker)
+          step_end = text.index(step_end_marker, step_start)
+
+          new_steps = '''    // ----- FOV ring -----
+              {
+                id: 'fovRing', effect: sectorFlashIn, duration: 800, start: { after: 'ring', at: 0.75 },
+                targets: () => fovSegments.map((seg, i) => [seg.el, fovTicks[i].el]),
+                params: {
+                  ring: fovRingEl,
+                  parkAngle: FOV_START_ANGLE,
+                  from: COL_BRIGHT,
+                  segmentTo: COL_MID,
+                  tickTo: COL_GLASS,
+                  onUpdate: positionFovLabels
+                }
+              },
+              {
+                id: 'fovSettle', effect: rotateIn, duration: 250, start: { after: 'fovRing', at: 1 },
+                targets: () => [fovRingEl],
+                params: {
+                  from: FOV_START_ANGLE,
+                  to: 0,
+                  ease: easeOutCubic,
+                  onUpdate: positionFovLabels
+                }
+              },
+
+          '''
+
+          text = text[:step_start] + new_steps + text[step_end:]
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          grep -q "const sectorFlashIn" zoomdial-2-0.html
+          grep -q "const FOV_START_ANGLE = 30" zoomdial-2-0.html
+          grep -q "id: 'fovSettle'" zoomdial-2-0.html
+
+      - name: Commit patched dial
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add zoomdial-2-0.html
+          git diff --cached --quiet && { echo "No changes produced"; exit 1; }
+          git commit -m "Restore FOV sector flash and zero settle"
+          git push

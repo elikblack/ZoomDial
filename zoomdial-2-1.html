@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payload Zoom Dial 2.1</title>
+<style>
+  :root{
+    --phosphor:#39ff6b;
+    --phosphor-mid:#1c8f38;
+    --phosphor-dim:#0c3a18;
+    --glass:#020602;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#08090a;
+    color:#8bd79a;
+    font-family:monospace;
+  }
+
+  .stage{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:16px;
+  }
+
+  /* The bezel is browser chrome. The pixels inside .screen are the simulator. */
+  .bezel{
+    position:relative;
+    width:300px;
+    height:300px;
+    border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #2a2c29 0%, #171815 55%, #0c0d0b 100%);
+    box-shadow:0 0 0 2px #000, 0 18px 40px rgba(0,0,0,.7);
+  }
+
+  .screen{
+    position:absolute;
+    top:22px;
+    left:22px;
+    width:256px;
+    height:256px;
+    border-radius:50%;
+    overflow:hidden;
+    background:#000;
+    cursor:grab;
+    touch-action:none;
+    box-shadow:inset 0 0 0 1px #000;
+  }
+  .screen:active{cursor:grabbing;}
+  .screen:focus-visible{outline:2px solid var(--phosphor); outline-offset:3px;}
+
+  canvas{
+    display:block;
+    width:256px;
+    height:256px;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+  }
+
+  .replay-btn{
+    font:12px monospace;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    background:#071b0c;
+    color:#8bd79a;
+    border:1px solid #1c8f38;
+    padding:8px 16px;
+    cursor:pointer;
+    user-select:none;
+    touch-action:none;
+  }
+  .replay-btn.holding{background:#0c3a18; color:#d7ffe0;}
+  .replay-btn:disabled{opacity:.45; cursor:default;}
+
+  .version{
+    font:10px monospace;
+    color:#426b49;
+    letter-spacing:.08em;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="bezel">
+      <div class="screen" id="screen" tabindex="0" role="slider"
+           aria-label="Payload zoom control" aria-valuemin="24" aria-valuemax="300" aria-valuenow="24">
+        <canvas id="dial" width="480" height="480"></canvas>
+      </div>
+    </div>
+    <button id="replayBtn" class="replay-btn">Hold 3 sec to replay startup</button>
+    <div class="version">ZOOMDIAL 2.1 · HARDWARE SIMULATOR</div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ==========================================================
+  // ZoomDial 2.1 hardware simulator
+  // ==========================================================
+  // 2.1 intentionally mirrors the Arduino renderer instead of leaning on
+  // browser-only SVG filters, Google fonts, CSS glow, or the old generic
+  // timeline/effects engine. The browser remains convenient for tuning, but
+  // the display itself is now a procedural 480x480 framebuffer analogue.
+
+  const canvas = document.getElementById('dial');
+  const ctx = canvas.getContext('2d', { alpha:false });
+  const screenEl = document.getElementById('screen');
+  const replayBtn = document.getElementById('replayBtn');
+  ctx.imageSmoothingEnabled = false;
+
+  // ---------- Geometry: copied from dial_v9 ----------
+  const W = 480, H = 480;
+  const cx = 240, cy = 240;
+
+  const gBandIn = 194, gBandOut = 208;
+  const rMajorIn = 180;
+  const rFovIn = 128, rFovOut = 152;
+  const rFovTickIn = 130, rFovTickOut = 150;
+  const rLabel = 168, rFovLabel = 140;
+
+  const majors = [24, 300, 200, 135, 100, 70, 50, 35];
+  const zoomCount = 8;
+  const step = 45;
+  const minorPerGap = 3;
+
+  const fovValues = [84, 65, 50, 28, 20, 14, 10, 4];
+  const fovCount = 8;
+  const fovStep = 45;
+  const fovPhase = -22;
+  const STOP_300 = 315;
+
+  const POINTER_BOX_W = 46;
+  const POINTER_BOX_H = 72;
+  const POINTER_BOX_Y = 46;
+  const POINTER_BORDER = 3;
+  const POINTER_CARET_W = 30;
+  const POINTER_CARET_Y0 = 20;
+  const POINTER_CARET_Y1 = POINTER_BOX_Y + 1;
+
+  const READOUT_EYEBROW_Y = cy - 58;
+  const READOUT_VALUE_Y   = cy - 18;
+  const READOUT_FOV_Y     = cy + 34;
+  const READOUT_CLEAR_R   = 112;
+
+  const TICK_MAJOR_HW = 0.8;
+  const TICK_MINOR_HW = 0.45;
+  const TICK_FOV_HW   = 0.6;
+
+  // ---------- Palette: copied from dial_v9 ----------
+  const COL_BG           = '#000000';
+  const COL_GREEN        = '#39ff6b';
+  const COL_GREEN_BRIGHT = '#a6ffb8';
+  const COL_GREEN_MID    = '#1c8f38';
+  const COL_GREEN_DIM    = '#0c3a18';
+  const COL_RED          = '#ff2d2d';
+  const COL_DARK         = '#020602';
+
+  // Important 2.1 correction: the normal unused zoom track stays at the
+  // same dark level it reaches during startup. In 2.0 browser this already
+  // happened because the CSS track remained DIM at 40% opacity. dial_v9,
+  // however, redraws DIM at full intensity after startup, creating the
+  // hardware-only brightening that hides the minor ticks.
+  const TRACK_FINAL = blendColor(COL_BG, COL_GREEN_DIM, 0.40);
+
+  // ---------- Planned v10 prototype timing ----------
+  // Existing v9 timings are retained until the FOV correction begins.
+  const STARTUP_POINTER_MS     = 1000;
+  const STARTUP_MAJORS_MS      = 1250;
+  const STARTUP_MINORS_MS      = 1625;
+  const STARTUP_TRACK_MS       = 1750;
+  const STARTUP_ZOOM_NUM_MS    = 2000;
+  const STARTUP_FOV_RING_MS    = 2125;
+  const STARTUP_EYEBROW_MS     = 2325;
+  const STARTUP_VALUE_MS       = 2525;
+  const STARTUP_FOV_NUM_MS     = 2645;
+  const STARTUP_FOV_READOUT_MS = 2750;
+
+  const T_CASCADE_MS     = 500;
+  const T_FOV_RING_MS    = 800;
+  const T_EYEBROW_MS     = 400;
+  const T_VALUE_MS       = 450;
+  const T_FOV_READOUT_MS = 400;
+
+  // More theatrical "compass hunting north" correction.
+  const FOV_START_ANGLE = 60;
+  const FOV_OVERSHOOT_ANGLE = -4;
+  const STARTUP_FOV_SETTLE_MS = 2925;
+  const T_FOV_SETTLE_MAIN_MS = 550;
+  const STARTUP_FOV_RETURN_MS = STARTUP_FOV_SETTLE_MS + T_FOV_SETTLE_MAIN_MS;
+  const T_FOV_RETURN_MS = 160;
+
+  // End punctuation: brief quiet beat, glitchy raster scan, ready pulse.
+  const STARTUP_SCAN_MS = STARTUP_FOV_RETURN_MS + T_FOV_RETURN_MS + 120;
+  const T_SCAN_MS = 320;
+  const STARTUP_READY_MS = STARTUP_SCAN_MS + T_SCAN_MS;
+  const T_READY_MS = 180;
+  const STARTUP_END_MS = STARTUP_READY_MS + T_READY_MS;
+
+  // Same practical frame cadence as the hardware animation.
+  const STARTUP_FRAME_MS = 33;
+  const BUTTON_HOLD_MS = 3000;
+
+  // ---------- 5x7 pixel font ----------
+  // Digits match dial_v9's dedicated radial font. The letters are a compact
+  // 5x7 set chosen to approximate the Arduino GFX classic 6x8 cell appearance.
+  const FONT = {
+    '0':['01110','10001','10001','10001','10001','10001','01110'],
+    '1':['00100','01100','00100','00100','00100','00100','01110'],
+    '2':['01110','10001','00001','00010','00100','01000','11111'],
+    '3':['11110','00001','00001','01110','00001','00001','11110'],
+    '4':['00010','00110','01010','10010','11111','00010','00010'],
+    '5':['11111','10000','10000','11110','00001','00001','11110'],
+    '6':['01110','10000','10000','11110','10001','10001','01110'],
+    '7':['11111','00001','00010','00100','01000','01000','01000'],
+    '8':['01110','10001','10001','01110','10001','10001','01110'],
+    '9':['01110','10001','10001','01111','00001','00001','01110'],
+    'A':['01110','10001','10001','11111','10001','10001','10001'],
+    'E':['11111','10000','10000','11110','10000','10000','11111'],
+    'F':['11111','10000','10000','11110','10000','10000','10000'],
+    'L':['10000','10000','10000','10000','10000','10000','11111'],
+    'M':['10001','11011','10101','10101','10001','10001','10001'],
+    'N':['10001','11001','10101','10011','10001','10001','10001'],
+    'O':['01110','10001','10001','10001','10001','10001','01110'],
+    'S':['01111','10000','10000','01110','00001','00001','11110'],
+    'V':['10001','10001','10001','10001','10001','01010','00100'],
+    'X':['10001','01010','00100','00100','00100','01010','10001'],
+    'Z':['11111','00001','00010','00100','01000','10000','11111'],
+    '°':['00110','01001','01001','00110','00000','00000','00000'],
+    ' ':['00000','00000','00000','00000','00000','00000','00000']
+  };
+
+  // ---------- Utility ----------
+  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+  function degToRad(deg){ return (deg - 90) * Math.PI / 180; }
+  function polar(r, deg){
+    const a = degToRad(deg);
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  }
+
+  function hexRgb(hex){
+    const n = parseInt(hex.slice(1),16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+  function rgbHex(r,g,b){
+    return '#' + [r,g,b].map(v => clamp(Math.round(v),0,255).toString(16).padStart(2,'0')).join('');
+  }
+  function lerpColor(a,b,t){
+    t = clamp(t,0,1);
+    const A=hexRgb(a), B=hexRgb(b);
+    return rgbHex(A[0]+(B[0]-A[0])*t, A[1]+(B[1]-A[1])*t, A[2]+(B[2]-A[2])*t);
+  }
+  function blendColor(bg, fg, opacity){ return lerpColor(bg, fg, opacity); }
+  function easeOutCubic(t){ t=clamp(t,0,1); const q=1-t; return 1-q*q*q; }
+  function stepProgress(t,start,duration){
+    if (t < start) return 0;
+    return duration ? clamp((t-start)/duration,0,1) : 1;
+  }
+
+  function clearScreen(){
+    ctx.fillStyle = COL_BG;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // ---------- Framebuffer-like primitives ----------
+  function fillCircle(x,y,r,color){
+    ctx.fillStyle=color;
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  function fillRect(x,y,w,h,color){
+    ctx.fillStyle=color;
+    ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));
+  }
+
+  function drawRectOutline(x,y,w,h,border,color){
+    fillRect(x,y,w,border,color);
+    fillRect(x,y+h-border,w,border,color);
+    fillRect(x,y,border,h,color);
+    fillRect(x+w-border,y,border,h,color);
+  }
+
+  function fillDownTriangle(centerX,y0,y1,width,color){
+    ctx.fillStyle=color;
+    ctx.beginPath();
+    ctx.moveTo(centerX-width/2,y0);
+    ctx.lineTo(centerX+width/2,y0);
+    ctx.lineTo(centerX,y1);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function tick(r1,r2,angleDeg,halfWidthDeg,color){
+    const pts = [
+      polar(r1, angleDeg-halfWidthDeg),
+      polar(r2, angleDeg-halfWidthDeg),
+      polar(r2, angleDeg+halfWidthDeg),
+      polar(r1, angleDeg+halfWidthDeg)
+    ];
+    ctx.fillStyle=color;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function bandArc(startDeg,endDeg,rIn,rOut,color){
+    // Draw as a stroked circular centerline. The band is the same radial
+    // thickness as the Arduino wedge renderer, with butt ends.
+    const r=(rIn+rOut)/2;
+    const width=rOut-rIn;
+    ctx.strokeStyle=color;
+    ctx.lineWidth=width;
+    ctx.lineCap='butt';
+    ctx.beginPath();
+    if (endDeg-startDeg >= 359.999){
+      ctx.arc(cx,cy,r,0,Math.PI*2);
+    } else {
+      ctx.arc(cx,cy,r,degToRad(startDeg),degToRad(endDeg),false);
+    }
+    ctx.stroke();
+  }
+
+  function drawPixelTextCentered(text,px,py,size,color,bloom=false){
+    // Match Arduino's 6x8 character cells and cursor centering.
+    const cellW=6*size, cellH=8*size;
+    const x0=Math.round(px-(text.length*cellW)/2);
+    const y0=Math.round(py-cellH/2);
+    drawPixelTextAt(text,x0,y0,size,color,bloom);
+  }
+
+  function drawPixelTextAt(text,x0,y0,size,color,bloom=false){
+    ctx.fillStyle=color;
+    for(let ci=0;ci<text.length;ci++){
+      const glyph=FONT[text[ci]] || FONT[' '];
+      for(let row=0;row<7;row++){
+        for(let col=0;col<5;col++){
+          if(glyph[row][col] !== '1') continue;
+          const x=x0+(ci*6+col)*size;
+          const y=y0+row*size;
+          if(bloom) fillRect(x-1,y-1,size+2,size+2,color);
+          else fillRect(x,y,size,size,color);
+        }
+      }
+    }
+  }
+
+  function digitPixelAt(text,logicalX,logicalY){
+    if(logicalY<0 || logicalY>=7 || logicalX<0) return false;
+    const charIndex=Math.floor(logicalX/6);
+    const col=logicalX%6;
+    if(charIndex>=text.length || col>=5) return false;
+    const glyph=FONT[text[charIndex]];
+    return !!glyph && glyph[logicalY][col]==='1';
+  }
+
+  function drawRotatedDigitsCentered(text,px,py,size,angleDeg,color){
+    const logicalW=text.length*6-1;
+    const srcW=logicalW*size;
+    const srcH=7*size;
+    const radius=Math.ceil(.5*Math.sqrt(srcW*srcW+srcH*srcH))+2;
+    const a=angleDeg*Math.PI/180;
+    const cs=Math.cos(a), sn=Math.sin(a);
+    const halfW=srcW/2, halfH=srcH/2;
+    ctx.fillStyle=color;
+
+    for(let dy=-radius;dy<=radius;dy++){
+      for(let dx=-radius;dx<=radius;dx++){
+        const lx= dx*cs + dy*sn + halfW;
+        const ly=-dx*sn + dy*cs + halfH;
+        const sx=Math.floor(lx), sy=Math.floor(ly);
+        if(sx<0 || sx>=srcW || sy<0 || sy>=srcH) continue;
+        if(digitPixelAt(text,Math.floor(sx/size),Math.floor(sy/size))){
+          fillRect(px+dx,py+dy,1,1,color);
+        }
+      }
+    }
+  }
+
+  function radialDigits(text,r,angleDeg,size,color){
+    const [px,py]=polar(r,angleDeg);
+    drawRotatedDigitsCentered(text,Math.round(px),Math.round(py),size,angleDeg,color);
+  }
+
+  // ---------- Dial model ----------
+  function continuousValue(rot){
+    const norm=(((-rot)%360)+360)%360;
+    const idx=Math.floor(norm/step);
+    const frac=(norm%step)/step;
+    const a=majors[idx], b=majors[(idx+1)%majors.length];
+    return a+(b-a)*frac;
+  }
+
+  function fovValueAt(input){
+    const norm=((input%360)+360)%360;
+    const idx=Math.floor(norm/fovStep);
+    const frac=(norm%fovStep)/fovStep;
+    const a=fovValues[idx], b=fovValues[(idx+1)%fovValues.length];
+    return a+(b-a)*frac;
+  }
+
+  // ---------- Selective bloom prototype ----------
+  // Deliberately procedural: a dimmer/thicker under-pass, then crisp pixels.
+  // No CSS filter, blur, shadow, or alpha-only effect that the ESP32 cannot
+  // reproduce cheaply.
+  const BLOOM_TICK = blendColor(COL_BG,COL_GREEN,0.18);
+  const BLOOM_VALUE = blendColor(COL_BG,COL_GREEN,0.16);
+  const BLOOM_POINTER = blendColor(COL_BG,COL_GREEN,0.18);
+  const BLOOM_ARC = blendColor(COL_BG,COL_GREEN,0.18);
+
+  function drawMajorTickBloom(rot, strength=1){
+    if(strength<=0) return;
+    const c=lerpColor(COL_BG,BLOOM_TICK,strength);
+    for(let i=0;i<zoomCount;i++) tick(rMajorIn-2,gBandOut+2,i*step+rot,TICK_MAJOR_HW+0.55,c);
+  }
+
+  function drawPointerBloom(color=BLOOM_POINTER){
+    const x=cx-POINTER_BOX_W/2;
+    drawRectOutline(x-2,POINTER_BOX_Y-2,POINTER_BOX_W+4,POINTER_BOX_H+4,5,color);
+    fillDownTriangle(cx,POINTER_CARET_Y0-2,POINTER_CARET_Y1+2,POINTER_CARET_W+6,color);
+  }
+
+  function drawValueBloom(mm){
+    const text=`${String(mm).padStart(3,'0')}MM`;
+    drawPixelTextCentered(text,cx,READOUT_VALUE_Y,4,BLOOM_VALUE,true);
+  }
+
+  // ---------- Visual layers ----------
+  function drawOuterTrack(color=TRACK_FINAL){ bandArc(0,360,gBandIn,gBandOut,color); }
+
+  function drawIndicatorRing(rot, readyPulse=0){
+    let trackColor=TRACK_FINAL;
+    if(readyPulse>0) trackColor=lerpColor(TRACK_FINAL,COL_GREEN_MID,readyPulse);
+    drawOuterTrack(trackColor);
+
+    if(rot>0){
+      bandArc(0,rot,gBandIn-2,gBandOut+2,BLOOM_ARC);
+      bandArc(0,rot,gBandIn,gBandOut,COL_GREEN);
+    }
+    const overrun=Math.max(0,rot-STOP_300);
+    if(overrun>0) bandArc(0,overrun,gBandIn,gBandOut,COL_RED);
+  }
+
+  function drawFovBandAndTicks(frozenRotation,startupOffset,bandColor,tickColor){
+    bandArc(0,360,rFovIn,rFovOut,bandColor);
+    for(let i=0;i<fovCount;i++){
+      tick(rFovTickIn,rFovTickOut,fovPhase+i*fovStep-frozenRotation+startupOffset,TICK_FOV_HW,tickColor);
+    }
+  }
+
+  function drawFovStartupSectors(overallProgress,startupOffset){
+    const scaled=clamp(overallProgress,0,1)*fovCount;
+    for(let i=0;i<fovCount;i++){
+      const local=clamp(scaled-i,0,1);
+      if(local<=0) continue;
+      const bandColor=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,local);
+      const tickColor=lerpColor(COL_GREEN_BRIGHT,COL_DARK,local);
+      const startA=fovPhase+i*fovStep+startupOffset;
+      bandArc(startA,startA+fovStep,rFovIn,rFovOut,bandColor);
+      tick(rFovTickIn,rFovTickOut,startA,TICK_FOV_HW,tickColor);
+    }
+  }
+
+  function drawZoomMajorTicks(rot,color,bloomStrength=1){
+    drawMajorTickBloom(rot,bloomStrength);
+    for(let i=0;i<zoomCount;i++) tick(rMajorIn,gBandOut,i*step+rot,TICK_MAJOR_HW,color);
+  }
+
+  function drawZoomMinorTicks(rot,normalColor,coveredColor){
+    for(let i=0;i<zoomCount;i++){
+      const angle=i*step+rot;
+      for(let m=1;m<=minorPerGap;m++){
+        const mAngle=angle+(step/(minorPerGap+1))*m;
+        const absAngle=((Math.trunc(mAngle)%360)+360)%360;
+        tick(gBandIn,gBandOut,mAngle,TICK_MINOR_HW,absAngle<rot?coveredColor:normalColor);
+      }
+    }
+  }
+
+  function drawFovLabelLayer(frozenRotation,startupOffset,color){
+    for(let i=0;i<fovCount;i++){
+      const worldAngle=fovPhase+i*fovStep-frozenRotation+fovStep/2+startupOffset;
+      radialDigits(String(fovValues[i]),rFovLabel,worldAngle,2,color);
+    }
+  }
+
+  function drawZoomLabelLayer(frozenRotation,color){
+    for(let i=0;i<zoomCount;i++) radialDigits(String(majors[i]),rLabel,i*step+frozenRotation,2,color);
+  }
+
+  function drawPointerLayer(atMax,overrideColor=null,bloom=true){
+    const color=overrideColor || (atMax?COL_RED:COL_GREEN);
+    if(bloom && !atMax) drawPointerBloom();
+    const x=cx-POINTER_BOX_W/2;
+    drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,color);
+    fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,color);
+  }
+
+  function drawEyebrowText(text,color){ drawPixelTextCentered(text,cx,READOUT_EYEBROW_Y,2,color); }
+
+  function drawValueText(mm,atMax,normalColor=COL_GREEN,bloom=true){
+    const text=`${String(mm).padStart(3,'0')}MM`;
+    if(atMax){
+      const valueW=text.length*6*4+12;
+      const valueH=8*4+6;
+      fillRect(cx-valueW/2,READOUT_VALUE_Y-valueH/2,valueW,valueH,COL_RED);
+      drawPixelTextCentered(text,cx,READOUT_VALUE_Y,4,COL_BG);
+    } else {
+      if(bloom) drawValueBloom(mm);
+      drawPixelTextCentered(text,cx,READOUT_VALUE_Y,4,normalColor);
+    }
+  }
+
+  function drawFovReadoutText(fov,atMax,normalTextColor=COL_DARK){
+    const text=`FOV ${fov}°`;
+    if(atMax){
+      drawPixelTextCentered(text,cx,READOUT_FOV_Y,2,COL_RED);
+    } else {
+      const badgeW=text.length*6*2+16;
+      const badgeH=8*2+10;
+      fillRect(cx-badgeW/2,READOUT_FOV_Y-badgeH/2,badgeW,badgeH,COL_GREEN);
+      drawPixelTextCentered(text,cx,READOUT_FOV_Y,2,normalTextColor);
+    }
+  }
+
+  function drawReadoutLayer(rot,frozenRotation,atMax,readyPulse=0){
+    fillCircle(cx,cy,READOUT_CLEAR_R,COL_BG);
+    const eyebrowColor=atMax?COL_RED:lerpColor(COL_GREEN_MID,COL_GREEN_BRIGHT,readyPulse);
+    drawEyebrowText(atMax?'MAX ZOOM':'EO LENS',eyebrowColor);
+    const mm=Math.round(atMax?300:continuousValue(rot));
+    const valueColor=atMax?COL_GREEN:lerpColor(COL_GREEN,COL_GREEN_BRIGHT,readyPulse);
+    drawValueText(mm,atMax,valueColor,true);
+    const fov=Math.round(fovValueAt(frozenRotation));
+    drawFovReadoutText(fov,atMax);
+  }
+
+  // ---------- Normal interactive dial ----------
+  let rotation=0;
+  function renderDial(rot,readyPulse=0){
+    clearScreen();
+    const frozen=Math.min(rot,STOP_300);
+    const atMax=rot>=STOP_300;
+
+    drawIndicatorRing(rot,readyPulse);
+    drawFovBandAndTicks(frozen,0,COL_GREEN_MID,COL_DARK);
+    drawZoomMajorTicks(rot,lerpColor(COL_GREEN_MID,COL_GREEN_BRIGHT,readyPulse),1);
+    drawZoomMinorTicks(rot,COL_GREEN_DIM,COL_DARK);
+    drawFovLabelLayer(frozen,0,COL_DARK);
+    drawZoomLabelLayer(frozen,COL_GREEN_MID);
+    drawPointerLayer(atMax,atMax?null:lerpColor(COL_GREEN,COL_GREEN_BRIGHT,readyPulse),true);
+    drawReadoutLayer(rot,frozen,atMax,readyPulse);
+
+    const val=atMax?300:continuousValue(rot);
+    screenEl.setAttribute('aria-valuenow',val.toFixed(1));
+  }
+
+  // ---------- Startup sequence ----------
+  let sequenceActive=false;
+  let startupStart=0;
+  let lastStartupFrame=0;
+  let rafId=0;
+
+  function currentFovOffset(elapsed){
+    if(elapsed<STARTUP_FOV_SETTLE_MS) return FOV_START_ANGLE;
+
+    const pMain=stepProgress(elapsed,STARTUP_FOV_SETTLE_MS,T_FOV_SETTLE_MAIN_MS);
+    if(pMain<1){
+      return FOV_START_ANGLE + (FOV_OVERSHOOT_ANGLE-FOV_START_ANGLE)*easeOutCubic(pMain);
+    }
+
+    const pReturn=stepProgress(elapsed,STARTUP_FOV_RETURN_MS,T_FOV_RETURN_MS);
+    if(pReturn<1){
+      return FOV_OVERSHOOT_ANGLE + (0-FOV_OVERSHOOT_ANGLE)*easeOutCubic(pReturn);
+    }
+    return 0;
+  }
+
+  function scanYAt(p){
+    // About ten hardware-like startup frames over 320ms. The small offset
+    // table makes the raster hesitate/jump without shifting the dial itself.
+    const glitches=[0,0,5,1,10,4,4,8,2,0,0];
+    const idx=clamp(Math.floor(p*(glitches.length-1)),0,glitches.length-1);
+    return clamp(Math.round(p*(H+24)-12+glitches[idx]),-12,H+12);
+  }
+
+  function drawScanLine(p){
+    if(p<=0 || p>=1) return;
+    const y=scanYAt(p);
+    const halo=blendColor(COL_BG,COL_GREEN,0.16);
+    const mid=blendColor(COL_BG,COL_GREEN_BRIGHT,0.42);
+    fillRect(0,y-6,W,12,halo);
+    fillRect(0,y-1,W,2,mid);
+
+    const frame=Math.floor(p*10);
+    if(frame===3 || frame===6 || frame===8){
+      fillRect(0,y+7,W,1,blendColor(COL_BG,COL_GREEN_BRIGHT,0.28));
+    }
+  }
+
+  function readyPulseAt(elapsed){
+    const p=stepProgress(elapsed,STARTUP_READY_MS,T_READY_MS);
+    if(p<=0 || p>=1) return 0;
+    return Math.sin(Math.PI*p);
+  }
+
+  function renderStartupFrame(elapsed){
+    clearScreen();
+
+    const pPointer=stepProgress(elapsed,STARTUP_POINTER_MS,T_CASCADE_MS);
+    const pMajors=stepProgress(elapsed,STARTUP_MAJORS_MS,T_CASCADE_MS);
+    const pMinors=stepProgress(elapsed,STARTUP_MINORS_MS,T_CASCADE_MS);
+    const pTrack=stepProgress(elapsed,STARTUP_TRACK_MS,T_CASCADE_MS);
+    const pZoomNum=stepProgress(elapsed,STARTUP_ZOOM_NUM_MS,T_CASCADE_MS);
+    const pFovRing=stepProgress(elapsed,STARTUP_FOV_RING_MS,T_FOV_RING_MS);
+    const pFovNum=stepProgress(elapsed,STARTUP_FOV_NUM_MS,T_CASCADE_MS);
+    const pEyebrow=stepProgress(elapsed,STARTUP_EYEBROW_MS,T_EYEBROW_MS);
+    const pValue=stepProgress(elapsed,STARTUP_VALUE_MS,T_VALUE_MS);
+    const pFovReadout=stepProgress(elapsed,STARTUP_FOV_READOUT_MS,T_FOV_READOUT_MS);
+    const pScan=stepProgress(elapsed,STARTUP_SCAN_MS,T_SCAN_MS);
+    const readyPulse=readyPulseAt(elapsed);
+    const fovOffset=currentFovOffset(elapsed);
+
+    // Outer track underlay. This reproduces dial_v9's startup blend but lands
+    // on TRACK_FINAL, so there is no end-of-sequence brightness jump.
+    if(pTrack>0){
+      const raw=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pTrack);
+      const opacity=.25+.15*pTrack;
+      const track=blendColor(COL_BG,raw,opacity);
+      const pulseTrack=readyPulse?lerpColor(track,COL_GREEN_MID,readyPulse):track;
+      drawOuterTrack(pulseTrack);
+    }
+
+    if(pFovRing>0) drawFovStartupSectors(pFovRing,fovOffset);
+
+    if(pMajors>0){
+      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pMajors);
+      const final=readyPulse?lerpColor(c,COL_GREEN_BRIGHT,readyPulse):c;
+      drawZoomMajorTicks(0,final,pMajors);
+    }
+
+    if(pMinors>0){
+      drawZoomMinorTicks(0,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pMinors),COL_DARK);
+    }
+
+    if(pZoomNum>0) drawZoomLabelLayer(0,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pZoomNum));
+    if(pFovNum>0) drawFovLabelLayer(0,fovOffset,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovNum));
+
+    if(pEyebrow>0){
+      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pEyebrow);
+      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      drawEyebrowText('EO LENS',c);
+    }
+
+    if(pValue>0){
+      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
+      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      drawValueText(24,false,c,true);
+    }
+
+    if(pFovReadout>0) drawFovReadoutText(84,false,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovReadout));
+
+    if(pPointer>0){
+      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pPointer);
+      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      drawPointerLayer(false,c,true);
+    }
+
+    // Scanner is a display overlay. It never distorts the underlying dial.
+    if(pScan>0 && pScan<1) drawScanLine(pScan);
+  }
+
+  function finishStartup(){
+    sequenceActive=false;
+    rotation=0;
+    lastStartupFrame=0;
+    replayBtn.disabled=false;
+    renderDial(0);
+  }
+
+  function startupLoop(now){
+    if(!sequenceActive) return;
+    const elapsed=now-startupStart;
+
+    if(elapsed>=STARTUP_END_MS){
+      finishStartup();
+      return;
+    }
+
+    if(lastStartupFrame===0 || now-lastStartupFrame>=STARTUP_FRAME_MS){
+      lastStartupFrame=now;
+      renderStartupFrame(elapsed);
+    }
+    rafId=requestAnimationFrame(startupLoop);
+  }
+
+  function runStartup(){
+    if(sequenceActive) return;
+    sequenceActive=true;
+    rotation=0;
+    replayBtn.disabled=true;
+    clearScreen();
+    startupStart=performance.now();
+    lastStartupFrame=0;
+    cancelAnimationFrame(rafId);
+    rafId=requestAnimationFrame(startupLoop);
+  }
+
+  // ---------- Input ----------
+  function clampRotation(r){ return clamp(r,0,360); }
+  let dragging=false;
+  let startPointerAngle=0;
+  let startRotation=0;
+
+  function angleFromEvent(e){
+    const rect=screenEl.getBoundingClientRect();
+    const px=(e.clientX??e.touches?.[0]?.clientX)-(rect.left+rect.width/2);
+    const py=(e.clientY??e.touches?.[0]?.clientY)-(rect.top+rect.height/2);
+    return Math.atan2(py,px)*180/Math.PI;
+  }
+
+  function onDown(e){
+    if(sequenceActive) return;
+    dragging=true;
+    startPointerAngle=angleFromEvent(e);
+    startRotation=rotation;
+    screenEl.focus();
+  }
+  function onMove(e){
+    if(!dragging || sequenceActive) return;
+    rotation=clampRotation(startRotation+(angleFromEvent(e)-startPointerAngle));
+    renderDial(rotation);
+  }
+  function onUp(){ dragging=false; }
+  function nudge(delta){
+    if(sequenceActive) return;
+    rotation=clampRotation(rotation+delta);
+    renderDial(rotation);
+  }
+
+  screenEl.addEventListener('mousedown',onDown);
+  window.addEventListener('mousemove',onMove);
+  window.addEventListener('mouseup',onUp);
+  screenEl.addEventListener('touchstart',onDown,{passive:true});
+  window.addEventListener('touchmove',onMove,{passive:true});
+  window.addEventListener('touchend',onUp);
+  screenEl.addEventListener('wheel',e=>{e.preventDefault(); nudge(e.deltaY>0?-3:3);},{passive:false});
+  screenEl.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='ArrowUp'){ nudge(-3); e.preventDefault(); }
+    else if(e.key==='ArrowLeft'||e.key==='ArrowDown'){ nudge(3); e.preventDefault(); }
+  });
+
+  // External replay control mirrors the physical knob's deliberate 3-second
+  // hold. Accidental taps do nothing.
+  let holdTimer=0;
+  function cancelHold(){
+    if(holdTimer) clearTimeout(holdTimer);
+    holdTimer=0;
+    replayBtn.classList.remove('holding');
+  }
+  function beginHold(e){
+    if(sequenceActive) return;
+    e.preventDefault();
+    cancelHold();
+    replayBtn.classList.add('holding');
+    holdTimer=setTimeout(()=>{
+      cancelHold();
+      runStartup();
+    },BUTTON_HOLD_MS);
+  }
+  replayBtn.addEventListener('pointerdown',beginHold);
+  replayBtn.addEventListener('pointerup',cancelHold);
+  replayBtn.addEventListener('pointercancel',cancelHold);
+  replayBtn.addEventListener('pointerleave',cancelHold);
+  replayBtn.addEventListener('contextmenu',e=>e.preventDefault());
+
+  // Initial black frame, then boot.
+  clearScreen();
+  runStartup();
+})();
+</script>
+</body>
+</html>

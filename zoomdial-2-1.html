@@ -106,10 +106,9 @@
   // ==========================================================
   // ZoomDial 2.1 hardware simulator
   // ==========================================================
-  // 2.1 intentionally mirrors the Arduino renderer instead of leaning on
-  // browser-only SVG filters, Google fonts, CSS glow, or the old generic
-  // timeline/effects engine. The browser remains convenient for tuning, but
-  // the display itself is now a procedural 480x480 framebuffer analogue.
+  // Procedural 480x480 Canvas2D renderer intended to stay portable to the
+  // ESP32 framebuffer implementation. Browser-only blur/filter tricks are
+  // deliberately avoided; bloom and persistence are explicit draw passes.
 
   const canvas = document.getElementById('dial');
   const ctx = canvas.getContext('2d', { alpha:false });
@@ -117,7 +116,7 @@
   const replayBtn = document.getElementById('replayBtn');
   ctx.imageSmoothingEnabled = false;
 
-  // ---------- Geometry: copied from dial_v9 ----------
+  // ---------- Geometry: mirrors dial_v9 ----------
   const W = 480, H = 480;
   const cx = 240, cy = 240;
 
@@ -155,24 +154,20 @@
   const TICK_MINOR_HW = 0.45;
   const TICK_FOV_HW   = 0.6;
 
-  // ---------- Palette: copied from dial_v9 ----------
+  // ---------- Palette ----------
   const COL_BG           = '#000000';
   const COL_GREEN        = '#39ff6b';
   const COL_GREEN_BRIGHT = '#a6ffb8';
   const COL_GREEN_MID    = '#1c8f38';
   const COL_GREEN_DIM    = '#0c3a18';
   const COL_RED          = '#ff2d2d';
+  const COL_RED_BRIGHT   = '#ff9a9a';
   const COL_DARK         = '#020602';
 
-  // Important 2.1 correction: the normal unused zoom track stays at the
-  // same dark level it reaches during startup. In 2.0 browser this already
-  // happened because the CSS track remained DIM at 40% opacity. dial_v9,
-  // however, redraws DIM at full intensity after startup, creating the
-  // hardware-only brightening that hides the minor ticks.
+  // Keep the unused track dark enough that minor ticks remain legible.
   const TRACK_FINAL = blendColor(COL_BG, COL_GREEN_DIM, 0.40);
 
-  // ---------- Planned v10 prototype timing ----------
-  // Existing v9 timings are retained until the FOV correction begins.
+  // ---------- Startup timing ----------
   const STARTUP_POINTER_MS     = 1000;
   const STARTUP_MAJORS_MS      = 1250;
   const STARTUP_MINORS_MS      = 1625;
@@ -190,35 +185,38 @@
   const T_VALUE_MS       = 450;
   const T_FOV_READOUT_MS = 400;
 
-  // Calibration prototype. The FOV assembly hunts counterclockwise from
-  // +60 through -4. The zoom scale itself stays fixed; instead a temporary
-  // near-full highlight/dead-zone flashes in at 0 degrees and makes one fast
-  // clockwise revolution beneath the fixed ticks, disappearing as it crosses
-  // 360 degrees.
+  // Both rings finish loading together, then sit misaligned long enough for
+  // the eye to register the calibration error before the FOV ring hunts home.
   const FOV_START_ANGLE = 60;
   const FOV_OVERSHOOT_ANGLE = -4;
-  const STARTUP_FOV_SETTLE_MS = 2925;
+  const T_CALIBRATION_HOLD_MS = 350;
+  const STARTUP_FOV_SETTLE_MS = STARTUP_FOV_RING_MS + T_FOV_RING_MS + T_CALIBRATION_HOLD_MS;
   const T_FOV_SETTLE_MAIN_MS = 1100;
   const STARTUP_FOV_RETURN_MS = STARTUP_FOV_SETTLE_MS + T_FOV_SETTLE_MAIN_MS;
   const T_FOV_RETURN_MS = 180;
+  const STARTUP_LOCK_MS = STARTUP_FOV_RETURN_MS + T_FOV_RETURN_MS;
 
-  const ZOOM_CAL_ANGLE = 340;
-  const STARTUP_ZOOM_CAL_MS = STARTUP_FOV_SETTLE_MS;
-  const T_ZOOM_SWEEP_MS = 500;
+  // Temporary outer-ring calibration highlight. Thirty-two sections align to
+  // the major/minor tick intervals but build counterclockwise, deliberately
+  // giving the outer ring a finer cadence than the eight FOV sectors.
+  const HIGHLIGHT_SEGMENTS = zoomCount * (minorPerGap + 1); // 32
+  const HIGHLIGHT_SEGMENT_DEG = 360 / HIGHLIGHT_SEGMENTS;
+  const STARTUP_HIGHLIGHT_BUILD_MS = STARTUP_FOV_RING_MS;
+  const T_HIGHLIGHT_BUILD_MS = T_FOV_RING_MS;
+  const T_HIGHLIGHT_FLASH_MS = 85;
+  const STARTUP_HIGHLIGHT_FADE_MS = STARTUP_FOV_RING_MS + T_FOV_RING_MS + 150;
+  const T_HIGHLIGHT_FADE_MS = 650;
 
-  // Scan-line and final ready-pulse experiments are intentionally disabled
-  // for this pass; they can return later as a separate idle/display behavior.
-  const STARTUP_END_MS = Math.max(
-    STARTUP_FOV_RETURN_MS + T_FOV_RETURN_MS,
-    STARTUP_ZOOM_CAL_MS + T_ZOOM_SWEEP_MS
-  );
+  // Final lock confirmation: clean number lock, tiny beat, then one concise
+  // reticle/caret flash with a deliberately stronger procedural bloom.
+  const STARTUP_CONFIRM_MS = STARTUP_LOCK_MS + 50;
+  const T_CONFIRM_MS = 180;
+  const STARTUP_END_MS = STARTUP_CONFIRM_MS + T_CONFIRM_MS + 35;
 
-  // Same practical frame cadence as the hardware animation.
+  // Same practical animation cadence as the target hardware.
   const STARTUP_FRAME_MS = 33;
 
   // ---------- 5x7 pixel font ----------
-  // Digits match dial_v9's dedicated radial font. The letters are a compact
-  // 5x7 set chosen to approximate the Arduino GFX classic 6x8 cell appearance.
   const FONT = {
     '0':['01110','10001','10001','10001','10001','10001','01110'],
     '1':['00100','01100','00100','00100','00100','00100','01110'],
@@ -271,6 +269,7 @@
     if (t < start) return 0;
     return duration ? clamp((t-start)/duration,0,1) : 1;
   }
+  function normalizeDeg(a){ return ((a%360)+360)%360; }
 
   function clearScreen(){
     ctx.fillStyle = COL_BG;
@@ -323,8 +322,6 @@
   }
 
   function bandArc(startDeg,endDeg,rIn,rOut,color){
-    // Draw as a stroked circular centerline. The band is the same radial
-    // thickness as the Arduino wedge renderer, with butt ends.
     const r=(rIn+rOut)/2;
     const width=rOut-rIn;
     ctx.strokeStyle=color;
@@ -340,7 +337,6 @@
   }
 
   function drawPixelTextCentered(text,px,py,size,color,bloom=false){
-    // Match Arduino's 6x8 character cells and cursor centering.
     const cellW=6*size, cellH=8*size;
     const x0=Math.round(px-(text.length*cellW)/2);
     const y0=Math.round(py-cellH/2);
@@ -359,6 +355,27 @@
           if(bloom) fillRect(x-1,y-1,size+2,size+2,color);
           else fillRect(x,y,size,size,color);
         }
+      }
+    }
+  }
+
+  function drawHollowCellAt(x0,y0,size,color){
+    const w=5*size;
+    const h=7*size;
+    const border=Math.max(1,size);
+    drawRectOutline(x0,y0,w,h,border,color);
+  }
+
+  function drawCellChar(ch,x0,y0,size,color){
+    if(ch==='□'){
+      drawHollowCellAt(x0,y0,size,color);
+      return;
+    }
+    const glyph=FONT[ch] || FONT[' '];
+    for(let row=0;row<7;row++){
+      for(let col=0;col<5;col++){
+        if(glyph[row][col] !== '1') continue;
+        fillRect(x0+col*size,y0+row*size,size,size,color);
       }
     }
   }
@@ -417,10 +434,7 @@
     return a+(b-a)*frac;
   }
 
-  // ---------- Selective bloom prototype ----------
-  // Deliberately procedural: a dimmer/thicker under-pass, then crisp pixels.
-  // No CSS filter, blur, shadow, or alpha-only effect that the ESP32 cannot
-  // reproduce cheaply.
+  // ---------- Selective bloom ----------
   const BLOOM_TICK = blendColor(COL_BG,COL_GREEN,0.18);
   const BLOOM_VALUE = blendColor(COL_BG,COL_GREEN,0.16);
   const BLOOM_POINTER = blendColor(COL_BG,COL_GREEN,0.18);
@@ -432,10 +446,10 @@
     for(let i=0;i<zoomCount;i++) tick(rMajorIn-2,gBandOut+2,i*step+rot,TICK_MAJOR_HW+0.55,c);
   }
 
-  function drawPointerBloom(color=BLOOM_POINTER){
+  function drawPointerBloom(color=BLOOM_POINTER, expansion=2){
     const x=cx-POINTER_BOX_W/2;
-    drawRectOutline(x-2,POINTER_BOX_Y-2,POINTER_BOX_W+4,POINTER_BOX_H+4,5,color);
-    fillDownTriangle(cx,POINTER_CARET_Y0-2,POINTER_CARET_Y1+2,POINTER_CARET_W+6,color);
+    drawRectOutline(x-expansion,POINTER_BOX_Y-expansion,POINTER_BOX_W+expansion*2,POINTER_BOX_H+expansion*2,5,color);
+    fillDownTriangle(cx,POINTER_CARET_Y0-expansion,POINTER_CARET_Y1+expansion,POINTER_CARET_W+expansion*3,color);
   }
 
   function drawValueBloom(mm){
@@ -489,7 +503,7 @@
       const angle=i*step+rot;
       for(let m=1;m<=minorPerGap;m++){
         const mAngle=angle+(step/(minorPerGap+1))*m;
-        const absAngle=((Math.trunc(mAngle)%360)+360)%360;
+        const absAngle=normalizeDeg(Math.trunc(mAngle));
         tick(gBandIn,gBandOut,mAngle,TICK_MINOR_HW,absAngle<rot?coveredColor:normalColor);
       }
     }
@@ -512,6 +526,17 @@
     const x=cx-POINTER_BOX_W/2;
     drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,color);
     fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,color);
+  }
+
+  function drawPointerConfirmation(pulse){
+    if(pulse<=0) return;
+    const bloomStrength=Math.sin(Math.PI*clamp(pulse,0,1));
+    const bloomColor=blendColor(COL_BG,COL_GREEN_BRIGHT,0.22+0.48*bloomStrength);
+    const crisp=lerpColor(COL_GREEN,COL_GREEN_BRIGHT,bloomStrength);
+    drawPointerBloom(bloomColor,4);
+    const x=cx-POINTER_BOX_W/2;
+    drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,crisp);
+    fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,crisp);
   }
 
   function drawEyebrowText(text,color){ drawPixelTextCentered(text,cx,READOUT_EYEBROW_Y,2,color); }
@@ -572,6 +597,144 @@
     screenEl.setAttribute('aria-valuenow',val.toFixed(1));
   }
 
+  // ---------- Startup calibration highlight ----------
+  function highlightFadeAt(elapsed){
+    if(elapsed<STARTUP_HIGHLIGHT_FADE_MS) return 1;
+    return 1-stepProgress(elapsed,STARTUP_HIGHLIGHT_FADE_MS,T_HIGHLIGHT_FADE_MS);
+  }
+
+  function drawStartupHighlightSegments(elapsed){
+    if(elapsed<STARTUP_HIGHLIGHT_BUILD_MS) return;
+    const buildP=stepProgress(elapsed,STARTUP_HIGHLIGHT_BUILD_MS,T_HIGHLIGHT_BUILD_MS);
+    const fade=highlightFadeAt(elapsed);
+    if(fade<=0) return;
+
+    const segmentInterval=T_HIGHLIGHT_BUILD_MS/HIGHLIGHT_SEGMENTS;
+    const visibleCount=Math.min(HIGHLIGHT_SEGMENTS,Math.ceil(buildP*HIGHLIGHT_SEGMENTS));
+
+    for(let i=0;i<visibleCount;i++){
+      const born=STARTUP_HIGHLIGHT_BUILD_MS+i*segmentInterval;
+      if(elapsed<born) continue;
+      const age=elapsed-born;
+      const settle=clamp(age/T_HIGHLIGHT_FLASH_MS,0,1);
+
+      // Build counterclockwise from twelve o'clock. The final two sections
+      // occupy the normal overrun neighborhood and therefore arrive red.
+      const start=-(i+1)*HIGHLIGHT_SEGMENT_DEG;
+      const end=-i*HIGHLIGHT_SEGMENT_DEG;
+      const normMid=normalizeDeg((start+end)/2);
+      const isRed=normMid<22.5;
+      const base=isRed?COL_RED:COL_GREEN;
+      const hot=isRed?COL_RED_BRIGHT:COL_GREEN_BRIGHT;
+      const core=blendColor(COL_BG,lerpColor(hot,base,settle),fade);
+      const glow=blendColor(COL_BG,lerpColor(hot,base,settle),0.16*fade*(1-settle*0.55));
+
+      bandArc(start,end,gBandIn-2,gBandOut+2,glow);
+      bandArc(start,end,gBandIn,gBandOut,core);
+    }
+  }
+
+  // ---------- Startup readout acquisition ----------
+  const FOCAL_STATES = [
+    '□□□□□',
+    '□3□□□',
+    '□30□M',
+    '300MM',
+    '135MM',
+    '□70MM',
+    '070MM',
+    '200MM',
+    '□50MM',
+    '050MM',
+    '100MM',
+    '035MM'
+  ];
+  const FOCAL_TIMES = [0,80,165,260,370,500,650,820,1020,1260,1560,1720];
+
+  const FOV_STATES = [
+    'FOV □□°',
+    'FOV 65°',
+    'FOV 28°',
+    'FOV □0°',
+    'FOV 10°',
+    'FOV 50°',
+    'FOV 14°',
+    'FOV 04°',
+    'FOV 20°'
+  ];
+  const FOV_TIMES = [0,110,240,390,560,760,990,1260,1500];
+
+  const CHAR_LAGS = [0,18,7,25,12,20,4,15];
+
+  function acquisitionState(states,times,localElapsed){
+    let idx=0;
+    for(let i=1;i<times.length;i++){
+      if(localElapsed>=times[i]) idx=i;
+      else break;
+    }
+    return {idx,start:times[idx]};
+  }
+
+  function ghostDurationFor(localElapsed,totalUntilLock){
+    const p=clamp(localElapsed/Math.max(1,totalUntilLock),0,1);
+    return 72-(42*p); // about 70 ms early, about 30 ms late
+  }
+
+  function drawAcquisitionText(states,times,localElapsed,px,py,size,currentColor,ghostColor,lockText=null,locked=false){
+    const displayText=locked && lockText ? lockText : null;
+    const textLen=(displayText || states[0]).length;
+    const cellW=6*size, cellH=8*size;
+    const x0=Math.round(px-(textLen*cellW)/2);
+    const y0=Math.round(py-cellH/2);
+
+    if(locked){
+      for(let i=0;i<displayText.length;i++) drawCellChar(displayText[i],x0+i*cellW,y0,size,currentColor);
+      return;
+    }
+
+    const {idx,start}=acquisitionState(states,times,localElapsed);
+    const current=states[idx];
+    const previous=idx>0?states[idx-1]:states[0];
+    const ghostMs=ghostDurationFor(localElapsed,STARTUP_LOCK_MS-(STARTUP_VALUE_MS));
+
+    for(let i=0;i<current.length;i++){
+      const lag=CHAR_LAGS[i%CHAR_LAGS.length];
+      const switchTime=start+lag;
+      const switched=localElapsed>=switchTime;
+      const nowChar=switched?current[i]:previous[i];
+      const oldChar=previous[i];
+      const age=localElapsed-switchTime;
+
+      if(switched && idx>0 && age>=0 && age<ghostMs && oldChar!==nowChar){
+        drawCellChar(oldChar,x0+i*cellW,y0,size,ghostColor);
+      }
+      drawCellChar(nowChar,x0+i*cellW,y0,size,currentColor);
+    }
+  }
+
+  function drawStartupValueAcquisition(elapsed,pValue,locked){
+    if(pValue<=0) return;
+    const local=Math.max(0,elapsed-STARTUP_VALUE_MS);
+    const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
+    const ghost=blendColor(COL_BG,COL_GREEN,0.22);
+    if(!locked) drawPixelTextCentered('     ',cx,READOUT_VALUE_Y,4,COL_BG);
+    drawAcquisitionText(FOCAL_STATES,FOCAL_TIMES,local,cx,READOUT_VALUE_Y,4,c,ghost,'024MM',locked);
+  }
+
+  function drawStartupFovAcquisition(elapsed,pReadout,locked){
+    if(pReadout<=0) return;
+    const local=Math.max(0,elapsed-STARTUP_FOV_READOUT_MS);
+    const finalText='FOV 84°';
+    const badgeW=finalText.length*6*2+16;
+    const badgeH=8*2+10;
+    const badge=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pReadout);
+    fillRect(cx-badgeW/2,READOUT_FOV_Y-badgeH/2,badgeW,badgeH,badge);
+
+    const current=lerpColor(COL_GREEN_MID,COL_DARK,pReadout);
+    const ghost=blendColor(badge,COL_DARK,0.34);
+    drawAcquisitionText(FOV_STATES,FOV_TIMES,local,cx,READOUT_FOV_Y,2,current,ghost,finalText,locked);
+  }
+
   // ---------- Startup sequence ----------
   let sequenceActive=false;
   let startupStart=0;
@@ -593,36 +756,10 @@
     return 0;
   }
 
-  function zoomSweepAngle(elapsed){
-    if(elapsed<STARTUP_ZOOM_CAL_MS) return 0;
-    const p=stepProgress(elapsed,STARTUP_ZOOM_CAL_MS,T_ZOOM_SWEEP_MS);
-    return 360*p;
-  }
-
-  function zoomSweepActive(elapsed){
-    return elapsed>=STARTUP_ZOOM_CAL_MS &&
-           elapsed<STARTUP_ZOOM_CAL_MS+T_ZOOM_SWEEP_MS;
-  }
-
-  function drawStartupZoomHighlight(offsetDeg, flashProgress){
-    // The temporary calibration highlight does not wrap around zero. As its
-    // starting edge races clockwise, whatever crosses 360 simply vanishes.
-    // The stationary tick grid is drawn later, so it remains visible on top.
-    const visibleEnd=Math.min(360,offsetDeg+ZOOM_CAL_ANGLE);
-    if(visibleEnd<=offsetDeg) return;
-
-    const green=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,flashProgress);
-    const red=lerpColor('#ff9a9a',COL_RED,flashProgress);
-    const bloom=blendColor(COL_BG,COL_GREEN,0.18);
-
-    bandArc(offsetDeg,visibleEnd,gBandIn-2,gBandOut+2,bloom);
-    bandArc(offsetDeg,visibleEnd,gBandIn,gBandOut,green);
-
-    const overrun=ZOOM_CAL_ANGLE-STOP_300;
-    const redEnd=Math.min(360,offsetDeg+overrun);
-    if(redEnd>offsetDeg){
-      bandArc(offsetDeg,redEnd,gBandIn,gBandOut,red);
-    }
+  function confirmationPulseAt(elapsed){
+    const p=stepProgress(elapsed,STARTUP_CONFIRM_MS,T_CONFIRM_MS);
+    if(p<=0 || p>=1) return 0;
+    return p;
   }
 
   function renderStartupFrame(elapsed){
@@ -639,24 +776,20 @@
     const pValue=stepProgress(elapsed,STARTUP_VALUE_MS,T_VALUE_MS);
     const pFovReadout=stepProgress(elapsed,STARTUP_FOV_READOUT_MS,T_FOV_READOUT_MS);
     const fovOffset=currentFovOffset(elapsed);
-    const zoomSweep=zoomSweepAngle(elapsed);
-    const zoomFlashProgress=stepProgress(elapsed,STARTUP_ZOOM_CAL_MS,120);
+    const locked=elapsed>=STARTUP_LOCK_MS;
+    const confirm=confirmationPulseAt(elapsed);
 
-    // Outer track underlay. This reproduces dial_v9's startup blend but lands
-    // on TRACK_FINAL, so there is no end-of-sequence brightness jump.
+    // Outer track first, then the temporary calibration highlight. Fixed zoom
+    // ticks are painted after it so they always remain legible above the band.
     if(pTrack>0){
       const raw=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pTrack);
       const opacity=.25+.15*pTrack;
-      const track=blendColor(COL_BG,raw,opacity);
-      drawOuterTrack(track);
+      drawOuterTrack(blendColor(COL_BG,raw,opacity));
     }
+
+    drawStartupHighlightSegments(elapsed);
 
     if(pFovRing>0) drawFovStartupSectors(pFovRing,fovOffset);
-
-    // One fast clockwise calibration sweep beneath the fixed tick grid.
-    if(zoomSweepActive(elapsed)){
-      drawStartupZoomHighlight(zoomSweep,zoomFlashProgress);
-    }
 
     if(pMajors>0){
       const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pMajors);
@@ -675,18 +808,15 @@
       drawEyebrowText('EO LENS',c);
     }
 
-    if(pValue>0){
-      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
-      drawValueText(24,false,c,true);
-    }
-
-    if(pFovReadout>0) drawFovReadoutText(84,false,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovReadout));
+    drawStartupValueAcquisition(elapsed,pValue,locked);
+    drawStartupFovAcquisition(elapsed,pFovReadout,locked);
 
     if(pPointer>0){
       const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pPointer);
       drawPointerLayer(false,c,true);
     }
 
+    if(confirm>0) drawPointerConfirmation(confirm);
   }
 
   function finishStartup(){
@@ -769,11 +899,10 @@
     else if(e.key==='ArrowLeft'||e.key==='ArrowDown'){ nudge(3); e.preventDefault(); }
   });
 
-  // Browser replay is intentionally immediate. The 3-second hold remains a
-  // physical-hardware safeguard only, because the encoder button is easy to bump.
+  // Browser replay is intentionally immediate. The physical Arduino keeps
+  // the 3-second safeguard because its encoder button is easy to bump.
   replayBtn.addEventListener('click',runStartup);
 
-  // Initial black frame, then boot.
   clearScreen();
   runStartup();
 })();

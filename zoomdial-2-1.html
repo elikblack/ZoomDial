@@ -207,8 +207,9 @@
   const STARTUP_HIGHLIGHT_FADE_MS = STARTUP_FOV_RING_MS + T_FOV_RING_MS + 150;
   const T_HIGHLIGHT_FADE_MS = 650;
 
-  // Final lock confirmation: clean number lock, tiny beat, then one concise
-  // reticle/caret flash with a deliberately stronger procedural bloom.
+  // Final lock confirmation: clean number lock, tiny beat, then the reticle
+  // briefly inverts to a filled calibration-confirmed state. No halo/bloom:
+  // the rectangle fill itself carries the decay while the caret/outline flash.
   const STARTUP_CONFIRM_MS = STARTUP_LOCK_MS + 50;
   const T_CONFIRM_MS = 180;
   const STARTUP_END_MS = STARTUP_CONFIRM_MS + T_CONFIRM_MS + 35;
@@ -437,7 +438,6 @@
   // ---------- Selective bloom ----------
   const BLOOM_TICK = blendColor(COL_BG,COL_GREEN,0.18);
   const BLOOM_VALUE = blendColor(COL_BG,COL_GREEN,0.16);
-  const BLOOM_POINTER = blendColor(COL_BG,COL_GREEN,0.18);
   const BLOOM_ARC = blendColor(COL_BG,COL_GREEN,0.18);
 
   function drawMajorTickBloom(rot, strength=1){
@@ -446,11 +446,6 @@
     for(let i=0;i<zoomCount;i++) tick(rMajorIn-2,gBandOut+2,i*step+rot,TICK_MAJOR_HW+0.55,c);
   }
 
-  function drawPointerBloom(color=BLOOM_POINTER, expansion=2){
-    const x=cx-POINTER_BOX_W/2;
-    drawRectOutline(x-expansion,POINTER_BOX_Y-expansion,POINTER_BOX_W+expansion*2,POINTER_BOX_H+expansion*2,5,color);
-    fillDownTriangle(cx,POINTER_CARET_Y0-expansion,POINTER_CARET_Y1+expansion,POINTER_CARET_W+expansion*3,color);
-  }
 
   function drawValueBloom(mm){
     const text=`${String(mm).padStart(3,'0')}MM`;
@@ -520,23 +515,39 @@
     for(let i=0;i<zoomCount;i++) radialDigits(String(majors[i]),rLabel,i*step+frozenRotation,2,color);
   }
 
-  function drawPointerLayer(atMax,overrideColor=null,bloom=true){
+  function drawPointerLayer(atMax,overrideColor=null){
     const color=overrideColor || (atMax?COL_RED:COL_GREEN);
-    if(bloom && !atMax) drawPointerBloom();
     const x=cx-POINTER_BOX_W/2;
     drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,color);
     fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,color);
   }
 
   function drawPointerConfirmation(pulse){
-    if(pulse<=0) return;
-    const bloomStrength=Math.sin(Math.PI*clamp(pulse,0,1));
-    const bloomColor=blendColor(COL_BG,COL_GREEN_BRIGHT,0.22+0.48*bloomStrength);
-    const crisp=lerpColor(COL_GREEN,COL_GREEN_BRIGHT,bloomStrength);
-    drawPointerBloom(bloomColor,4);
+    if(pulse<=0 || pulse>=1) return;
+
+    // A fast bright hit that relaxes back to normal reticle green. The filled
+    // rectangle fades away independently, revealing the ordinary hollow state
+    // already rendered underneath. No expanded halo/bloom pass is used here.
+    const flash=1-easeOutCubic(pulse);
+    const fillStrength=(1-pulse)*(1-pulse);
+    const reticleColor=lerpColor(COL_GREEN,COL_GREEN_BRIGHT,flash);
+    const fillColor=blendColor(COL_BG,reticleColor,fillStrength);
     const x=cx-POINTER_BOX_W/2;
-    drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,crisp);
-    fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,crisp);
+
+    if(fillStrength>0.025){
+      fillRect(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,fillColor);
+
+      // The two radial scale values inside the reticle invert to black while
+      // the fill is strong, then return toward their ordinary colors as it dies.
+      const reveal=clamp((0.30-fillStrength)/0.30,0,1);
+      const zoomText=lerpColor(COL_BG,COL_GREEN_MID,reveal);
+      const fovText=lerpColor(COL_BG,COL_DARK,reveal);
+      radialDigits(String(majors[0]),rLabel,0,2,zoomText);
+      radialDigits(String(fovValues[0]),rFovLabel,fovPhase+fovStep/2,2,fovText);
+    }
+
+    drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,reticleColor);
+    fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,reticleColor);
   }
 
   function drawEyebrowText(text,color){ drawPixelTextCentered(text,cx,READOUT_EYEBROW_Y,2,color); }
@@ -569,7 +580,7 @@
   function drawReadoutLayer(rot,frozenRotation,atMax,readyPulse=0){
     fillCircle(cx,cy,READOUT_CLEAR_R,COL_BG);
     const eyebrowColor=atMax?COL_RED:lerpColor(COL_GREEN_MID,COL_GREEN_BRIGHT,readyPulse);
-    drawEyebrowText(atMax?'MAX ZOOM':'EO LENS',eyebrowColor);
+    drawEyebrowText(atMax?'MAX ZOOM':'EO ZOOM',eyebrowColor);
     const mm=Math.round(atMax?300:continuousValue(rot));
     const valueColor=atMax?COL_GREEN:lerpColor(COL_GREEN,COL_GREEN_BRIGHT,readyPulse);
     drawValueText(mm,atMax,valueColor,true);
@@ -590,7 +601,7 @@
     drawZoomMinorTicks(rot,COL_GREEN_DIM,COL_DARK);
     drawFovLabelLayer(frozen,0,COL_DARK);
     drawZoomLabelLayer(frozen,COL_GREEN_MID);
-    drawPointerLayer(atMax,atMax?null:lerpColor(COL_GREEN,COL_GREEN_BRIGHT,readyPulse),true);
+    drawPointerLayer(atMax,atMax?null:lerpColor(COL_GREEN,COL_GREEN_BRIGHT,readyPulse));
     drawReadoutLayer(rot,frozen,atMax,readyPulse);
 
     const val=atMax?300:continuousValue(rot);
@@ -635,104 +646,165 @@
   }
 
   // ---------- Startup readout acquisition ----------
-  const FOCAL_STATES = [
-    '□□□□□',
-    '□3□□□',
-    '□30□M',
-    '300MM',
-    '135MM',
-    '□70MM',
-    '070MM',
-    '200MM',
-    '□50MM',
-    '050MM',
-    '100MM',
-    '035MM'
+  // The center now resolves in stages rather than simply appearing. Glyph
+  // events have independent lifetimes, so several generations can coexist as
+  // fading persistence instead of the old one-previous-character crossfade.
+
+  const FOCAL_BOX_FLASH_MS = 150;
+  const FOCAL_MM_RESOLVE_MS = 175;
+  const FOCAL_DIGIT_START_MS = 330;
+  const FOCAL_DIGIT_EVENTS = [
+    {t:330,  value:'300'},
+    {t:425,  value:'135'},
+    {t:535,  value:'070'},
+    {t:665,  value:'200'},
+    {t:820,  value:'050'},
+    {t:1005, value:'100'},
+    {t:1220, value:'300'},
+    {t:1470, value:'070'},
+    {t:1740, value:'035'}
   ];
-  const FOCAL_TIMES = [0,80,165,260,370,500,650,820,1020,1260,1560,1720];
+  const FOCAL_CHAR_LAG = [0,32,58];
 
-  const FOV_STATES = [
-    'FOV □□°',
-    'FOV 65°',
-    'FOV 28°',
-    'FOV □0°',
-    'FOV 10°',
-    'FOV 50°',
-    'FOV 14°',
-    'FOV 04°',
-    'FOV 20°'
+  const FOV_BADGE_FLASH_MS = 150;
+  const FOV_BOXES_MS = 145;
+  const FOV_PREFIX_MS = 305;
+  const FOV_DIGIT_START_MS = 500;
+  const FOV_DIGIT_EVENTS = [
+    {t:500,  value:'65'},
+    {t:615,  value:'28'},
+    {t:755,  value:'10'},
+    {t:920,  value:'50'},
+    {t:1120, value:'14'},
+    {t:1360, value:'04'},
+    {t:1625, value:'20'}
   ];
-  const FOV_TIMES = [0,110,240,390,560,760,990,1260,1500];
+  const FOV_CHAR_LAG = [0,42];
 
-  const CHAR_LAGS = [0,18,7,25,12,20,4,15];
+  function persistenceLifetime(eventIndex,eventCount,earlyMs=390,lateMs=270){
+    const p=eventCount<=1?1:eventIndex/(eventCount-1);
+    return earlyMs+(lateMs-earlyMs)*p;
+  }
 
-  function acquisitionState(states,times,localElapsed){
-    let idx=0;
-    for(let i=1;i<times.length;i++){
-      if(localElapsed>=times[i]) idx=i;
-      else break;
+  function persistenceStrength(age,lifetime){
+    if(age<0 || age>=lifetime) return 0;
+    const hold=Math.min(55,lifetime*0.16);
+    if(age<=hold) return 1;
+    const p=(age-hold)/Math.max(1,lifetime-hold);
+    // Hang onto the old glyphs for a while, then let them fall away quickly.
+    return (1-p)*(1-p*0.45);
+  }
+
+  function drawFadingEventChars(events,localElapsed,x0,y0,size,charLag,fromColor,toColor){
+    const cellW=6*size;
+    for(let ei=0;ei<events.length;ei++){
+      const ev=events[ei];
+      if(localElapsed<ev.t) continue;
+      const lifetime=persistenceLifetime(ei,events.length);
+
+      for(let ci=0;ci<ev.value.length;ci++){
+        const born=ev.t+(charLag[ci%charLag.length]||0);
+        const age=localElapsed-born;
+        const strength=persistenceStrength(age,lifetime);
+        if(strength<=0) continue;
+        const color=lerpColor(toColor,fromColor,strength);
+        drawCellChar(ev.value[ci],x0+ci*cellW,y0,size,color);
+      }
     }
-    return {idx,start:times[idx]};
   }
 
-  function ghostDurationFor(localElapsed,totalUntilLock){
-    const p=clamp(localElapsed/Math.max(1,totalUntilLock),0,1);
-    return 72-(42*p); // about 70 ms early, about 30 ms late
-  }
-
-  function drawAcquisitionText(states,times,localElapsed,px,py,size,currentColor,ghostColor,lockText=null,locked=false){
-    const displayText=locked && lockText ? lockText : null;
-    const textLen=(displayText || states[0]).length;
+  function drawStartupValueAcquisition(elapsed,locked){
+    if(elapsed<STARTUP_VALUE_MS) return;
+    const local=elapsed-STARTUP_VALUE_MS;
+    const size=4;
     const cellW=6*size, cellH=8*size;
-    const x0=Math.round(px-(textLen*cellW)/2);
-    const y0=Math.round(py-cellH/2);
+    const x0=Math.round(cx-(5*cellW)/2);
+    const y0=Math.round(READOUT_VALUE_Y-cellH/2);
 
     if(locked){
-      for(let i=0;i<displayText.length;i++) drawCellChar(displayText[i],x0+i*cellW,y0,size,currentColor);
+      drawPixelTextCentered('024MM',cx,READOUT_VALUE_Y,size,COL_GREEN);
       return;
     }
 
-    const {idx,start}=acquisitionState(states,times,localElapsed);
-    const current=states[idx];
-    const previous=idx>0?states[idx-1]:states[0];
-    const ghostMs=ghostDurationFor(localElapsed,STARTUP_LOCK_MS-(STARTUP_VALUE_MS));
-
-    for(let i=0;i<current.length;i++){
-      const lag=CHAR_LAGS[i%CHAR_LAGS.length];
-      const switchTime=start+lag;
-      const switched=localElapsed>=switchTime;
-      const nowChar=switched?current[i]:previous[i];
-      const oldChar=previous[i];
-      const age=localElapsed-switchTime;
-
-      if(switched && idx>0 && age>=0 && age<ghostMs && oldChar!==nowChar){
-        drawCellChar(oldChar,x0+i*cellW,y0,size,ghostColor);
+    // Five missing-character cells arrive first with a quick bright flash.
+    // The numeric cells linger until acquisition begins; MM resolves first.
+    const boxFlash=clamp(local/FOCAL_BOX_FLASH_MS,0,1);
+    const boxColor=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,boxFlash);
+    if(local<FOCAL_DIGIT_START_MS+260){
+      const boxFade=local<=FOCAL_DIGIT_START_MS?1:1-clamp((local-FOCAL_DIGIT_START_MS)/260,0,1);
+      const fadedBox=blendColor(COL_BG,boxColor,boxFade);
+      for(let i=0;i<3;i++) drawHollowCellAt(x0+i*cellW,y0,size,fadedBox);
+      if(local<FOCAL_MM_RESOLVE_MS){
+        drawHollowCellAt(x0+3*cellW,y0,size,boxColor);
+        drawHollowCellAt(x0+4*cellW,y0,size,boxColor);
       }
-      drawCellChar(nowChar,x0+i*cellW,y0,size,currentColor);
+    }
+
+    if(local>=FOCAL_MM_RESOLVE_MS){
+      drawCellChar('M',x0+3*cellW,y0,size,COL_GREEN);
+      drawCellChar('M',x0+4*cellW,y0,size,COL_GREEN);
+    }
+
+    if(local>=FOCAL_DIGIT_START_MS){
+      drawFadingEventChars(
+        FOCAL_DIGIT_EVENTS,local,x0,y0,size,FOCAL_CHAR_LAG,
+        COL_GREEN_BRIGHT,COL_BG
+      );
     }
   }
 
-  function drawStartupValueAcquisition(elapsed,pValue,locked){
-    if(pValue<=0) return;
-    const local=Math.max(0,elapsed-STARTUP_VALUE_MS);
-    const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
-    const ghost=blendColor(COL_BG,COL_GREEN,0.22);
-    if(!locked) drawPixelTextCentered('     ',cx,READOUT_VALUE_Y,4,COL_BG);
-    drawAcquisitionText(FOCAL_STATES,FOCAL_TIMES,local,cx,READOUT_VALUE_Y,4,c,ghost,'024MM',locked);
-  }
-
-  function drawStartupFovAcquisition(elapsed,pReadout,locked){
-    if(pReadout<=0) return;
-    const local=Math.max(0,elapsed-STARTUP_FOV_READOUT_MS);
+  function drawStartupFovAcquisition(elapsed,locked){
+    if(elapsed<STARTUP_FOV_READOUT_MS) return;
+    const local=elapsed-STARTUP_FOV_READOUT_MS;
+    const size=2;
     const finalText='FOV 84°';
-    const badgeW=finalText.length*6*2+16;
-    const badgeH=8*2+10;
-    const badge=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pReadout);
+    const cellW=6*size, cellH=8*size;
+    const x0=Math.round(cx-(finalText.length*cellW)/2);
+    const y0=Math.round(READOUT_FOV_Y-cellH/2);
+    const badgeW=finalText.length*cellW+16;
+    const badgeH=cellH+10;
+
+    if(locked){
+      fillRect(cx-badgeW/2,READOUT_FOV_Y-badgeH/2,badgeW,badgeH,COL_GREEN);
+      drawPixelTextCentered(finalText,cx,READOUT_FOV_Y,size,COL_DARK);
+      return;
+    }
+
+    // First the instrument knows only that a FOV field exists: an empty green
+    // badge flashes on. Missing character cells follow, then FOV resolves,
+    // and only after that do the numeric telemetry events begin.
+    const badgeP=clamp(local/FOV_BADGE_FLASH_MS,0,1);
+    const badge=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,badgeP);
     fillRect(cx-badgeW/2,READOUT_FOV_Y-badgeH/2,badgeW,badgeH,badge);
 
-    const current=lerpColor(COL_GREEN_MID,COL_DARK,pReadout);
-    const ghost=blendColor(badge,COL_DARK,0.34);
-    drawAcquisitionText(FOV_STATES,FOV_TIMES,local,cx,READOUT_FOV_Y,2,current,ghost,finalText,locked);
+    if(local>=FOV_BOXES_MS){
+      const boxColor=lerpColor(COL_GREEN_MID,COL_DARK,clamp((local-FOV_BOXES_MS)/140,0,1));
+      if(local<FOV_PREFIX_MS){
+        for(let i=0;i<finalText.length;i++){
+          if(i===3) continue;
+          drawHollowCellAt(x0+i*cellW,y0,size,boxColor);
+        }
+      } else {
+        drawPixelTextAt('FOV',x0,y0,size,COL_DARK);
+        if(local<FOV_DIGIT_START_MS+260){
+          const boxFade=local<=FOV_DIGIT_START_MS?1:1-clamp((local-FOV_DIGIT_START_MS)/260,0,1);
+          const numericBox=lerpColor(badge,COL_DARK,0.88*boxFade);
+          drawHollowCellAt(x0+4*cellW,y0,size,numericBox);
+          drawHollowCellAt(x0+5*cellW,y0,size,numericBox);
+          drawHollowCellAt(x0+6*cellW,y0,size,numericBox);
+        }
+      }
+    }
+
+    if(local>=FOV_DIGIT_START_MS){
+      // Degree resolves as the numeric channel comes online; only the two
+      // digits keep cycling and leaving independent dark persistence trails.
+      drawCellChar('°',x0+6*cellW,y0,size,COL_DARK);
+      drawFadingEventChars(
+        FOV_DIGIT_EVENTS,local,x0+4*cellW,y0,size,FOV_CHAR_LAG,
+        COL_DARK,badge
+      );
+    }
   }
 
   // ---------- Startup sequence ----------
@@ -772,9 +844,6 @@
     const pZoomNum=stepProgress(elapsed,STARTUP_ZOOM_NUM_MS,T_CASCADE_MS);
     const pFovRing=stepProgress(elapsed,STARTUP_FOV_RING_MS,T_FOV_RING_MS);
     const pFovNum=stepProgress(elapsed,STARTUP_FOV_NUM_MS,T_CASCADE_MS);
-    const pEyebrow=stepProgress(elapsed,STARTUP_EYEBROW_MS,T_EYEBROW_MS);
-    const pValue=stepProgress(elapsed,STARTUP_VALUE_MS,T_VALUE_MS);
-    const pFovReadout=stepProgress(elapsed,STARTUP_FOV_READOUT_MS,T_FOV_READOUT_MS);
     const fovOffset=currentFovOffset(elapsed);
     const locked=elapsed>=STARTUP_LOCK_MS;
     const confirm=confirmationPulseAt(elapsed);
@@ -803,17 +872,16 @@
     if(pZoomNum>0) drawZoomLabelLayer(0,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pZoomNum));
     if(pFovNum>0) drawFovLabelLayer(0,fovOffset,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovNum));
 
-    if(pEyebrow>0){
-      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pEyebrow);
-      drawEyebrowText('EO LENS',c);
+    if(elapsed>=STARTUP_EYEBROW_MS){
+      drawEyebrowText('EO ZOOM',COL_GREEN_MID);
     }
 
-    drawStartupValueAcquisition(elapsed,pValue,locked);
-    drawStartupFovAcquisition(elapsed,pFovReadout,locked);
+    drawStartupValueAcquisition(elapsed,locked);
+    drawStartupFovAcquisition(elapsed,locked);
 
     if(pPointer>0){
       const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pPointer);
-      drawPointerLayer(false,c,true);
+      drawPointerLayer(false,c);
     }
 
     if(confirm>0) drawPointerConfirmation(confirm);

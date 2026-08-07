@@ -78,7 +78,6 @@
     user-select:none;
     touch-action:none;
   }
-  .replay-btn.holding{background:#0c3a18; color:#d7ffe0;}
   .replay-btn:disabled{opacity:.45; cursor:default;}
 
   .version{
@@ -96,7 +95,7 @@
         <canvas id="dial" width="480" height="480"></canvas>
       </div>
     </div>
-    <button id="replayBtn" class="replay-btn">Hold 3 sec to replay startup</button>
+    <button id="replayBtn" class="replay-btn">Replay Startup</button>
     <div class="version">ZOOMDIAL 2.1 · HARDWARE SIMULATOR</div>
   </div>
 
@@ -191,24 +190,33 @@
   const T_VALUE_MS       = 450;
   const T_FOV_READOUT_MS = 400;
 
-  // More theatrical "compass hunting north" correction.
+  // Counter-rotating calibration prototype. The FOV assembly hunts
+  // counterclockwise from +60 through -4, while the zoom-side minor ticks
+  // correct clockwise from -30 back to zero. A temporary near-full zoom
+  // highlight/dead-zone flashes into existence with that moving assembly,
+  // then fades away once the zoom scale has indexed.
   const FOV_START_ANGLE = 60;
   const FOV_OVERSHOOT_ANGLE = -4;
   const STARTUP_FOV_SETTLE_MS = 2925;
-  const T_FOV_SETTLE_MAIN_MS = 550;
+  const T_FOV_SETTLE_MAIN_MS = 1100;
   const STARTUP_FOV_RETURN_MS = STARTUP_FOV_SETTLE_MS + T_FOV_SETTLE_MAIN_MS;
-  const T_FOV_RETURN_MS = 160;
+  const T_FOV_RETURN_MS = 180;
 
-  // End punctuation: brief quiet beat, glitchy raster scan, ready pulse.
-  const STARTUP_SCAN_MS = STARTUP_FOV_RETURN_MS + T_FOV_RETURN_MS + 120;
-  const T_SCAN_MS = 320;
-  const STARTUP_READY_MS = STARTUP_SCAN_MS + T_SCAN_MS;
-  const T_READY_MS = 180;
-  const STARTUP_END_MS = STARTUP_READY_MS + T_READY_MS;
+  const ZOOM_START_OFFSET = -30;
+  const ZOOM_CAL_ANGLE = 340;
+  const STARTUP_ZOOM_CAL_MS = STARTUP_FOV_SETTLE_MS;
+  const T_ZOOM_CAL_MS = 1100;
+  const T_ZOOM_HIGHLIGHT_FADE_MS = 220;
+
+  // Scan-line and final ready-pulse experiments are intentionally disabled
+  // for this pass; they can return later as a separate idle/display behavior.
+  const STARTUP_END_MS = Math.max(
+    STARTUP_FOV_RETURN_MS + T_FOV_RETURN_MS,
+    STARTUP_ZOOM_CAL_MS + T_ZOOM_CAL_MS + T_ZOOM_HIGHLIGHT_FADE_MS
+  );
 
   // Same practical frame cadence as the hardware animation.
   const STARTUP_FRAME_MS = 33;
-  const BUTTON_HOLD_MS = 3000;
 
   // ---------- 5x7 pixel font ----------
   // Digits match dial_v9's dedicated radial font. The letters are a compact
@@ -317,8 +325,6 @@
   }
 
   function bandArc(startDeg,endDeg,rIn,rOut,color){
-    // Draw as a stroked circular centerline. The band is the same radial
-    // thickness as the Arduino wedge renderer, with butt ends.
     const r=(rIn+rOut)/2;
     const width=rOut-rIn;
     ctx.strokeStyle=color;
@@ -334,7 +340,6 @@
   }
 
   function drawPixelTextCentered(text,px,py,size,color,bloom=false){
-    // Match Arduino's 6x8 character cells and cursor centering.
     const cellW=6*size, cellH=8*size;
     const x0=Math.round(px-(text.length*cellW)/2);
     const y0=Math.round(py-cellH/2);
@@ -412,9 +417,6 @@
   }
 
   // ---------- Selective bloom prototype ----------
-  // Deliberately procedural: a dimmer/thicker under-pass, then crisp pixels.
-  // No CSS filter, blur, shadow, or alpha-only effect that the ESP32 cannot
-  // reproduce cheaply.
   const BLOOM_TICK = blendColor(COL_BG,COL_GREEN,0.18);
   const BLOOM_VALUE = blendColor(COL_BG,COL_GREEN,0.16);
   const BLOOM_POINTER = blendColor(COL_BG,COL_GREEN,0.18);
@@ -587,32 +589,40 @@
     return 0;
   }
 
-  function scanYAt(p){
-    // About ten hardware-like startup frames over 320ms. The small offset
-    // table makes the raster hesitate/jump without shifting the dial itself.
-    const glitches=[0,0,5,1,10,4,4,8,2,0,0];
-    const idx=clamp(Math.floor(p*(glitches.length-1)),0,glitches.length-1);
-    return clamp(Math.round(p*(H+24)-12+glitches[idx]),-12,H+12);
+  function currentZoomStartupOffset(elapsed){
+    if(elapsed<STARTUP_ZOOM_CAL_MS) return ZOOM_START_OFFSET;
+    const p=stepProgress(elapsed,STARTUP_ZOOM_CAL_MS,T_ZOOM_CAL_MS);
+    return ZOOM_START_OFFSET + (0-ZOOM_START_OFFSET)*easeOutCubic(p);
   }
 
-  function drawScanLine(p){
-    if(p<=0 || p>=1) return;
-    const y=scanYAt(p);
-    const halo=blendColor(COL_BG,COL_GREEN,0.16);
-    const mid=blendColor(COL_BG,COL_GREEN_BRIGHT,0.42);
-    fillRect(0,y-6,W,12,halo);
-    fillRect(0,y-1,W,2,mid);
+  function zoomHighlightOpacity(elapsed){
+    if(elapsed<STARTUP_ZOOM_CAL_MS) return 0;
+    const pCal=stepProgress(elapsed,STARTUP_ZOOM_CAL_MS,T_ZOOM_CAL_MS);
+    if(pCal<1) return 1;
+    const pFade=stepProgress(
+      elapsed,
+      STARTUP_ZOOM_CAL_MS+T_ZOOM_CAL_MS,
+      T_ZOOM_HIGHLIGHT_FADE_MS
+    );
+    return 1-pFade;
+  }
 
-    const frame=Math.floor(p*10);
-    if(frame===3 || frame===6 || frame===8){
-      fillRect(0,y+7,W,1,blendColor(COL_BG,COL_GREEN_BRIGHT,0.28));
+  function drawStartupZoomHighlight(offsetDeg, opacity, flashProgress){
+    if(opacity<=0) return;
+
+    const greenBase=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,flashProgress);
+    const redBase=lerpColor('#ff9a9a',COL_RED,flashProgress);
+    const green=blendColor(COL_BG,greenBase,opacity);
+    const red=blendColor(COL_BG,redBase,opacity);
+    const bloom=blendColor(COL_BG,COL_GREEN,0.18*opacity);
+
+    bandArc(offsetDeg,offsetDeg+ZOOM_CAL_ANGLE,gBandIn-2,gBandOut+2,bloom);
+    bandArc(offsetDeg,offsetDeg+ZOOM_CAL_ANGLE,gBandIn,gBandOut,green);
+
+    const overrun=ZOOM_CAL_ANGLE-STOP_300;
+    if(overrun>0){
+      bandArc(offsetDeg,offsetDeg+overrun,gBandIn,gBandOut,red);
     }
-  }
-
-  function readyPulseAt(elapsed){
-    const p=stepProgress(elapsed,STARTUP_READY_MS,T_READY_MS);
-    if(p<=0 || p>=1) return 0;
-    return Math.sin(Math.PI*p);
   }
 
   function renderStartupFrame(elapsed){
@@ -628,57 +638,52 @@
     const pEyebrow=stepProgress(elapsed,STARTUP_EYEBROW_MS,T_EYEBROW_MS);
     const pValue=stepProgress(elapsed,STARTUP_VALUE_MS,T_VALUE_MS);
     const pFovReadout=stepProgress(elapsed,STARTUP_FOV_READOUT_MS,T_FOV_READOUT_MS);
-    const pScan=stepProgress(elapsed,STARTUP_SCAN_MS,T_SCAN_MS);
-    const readyPulse=readyPulseAt(elapsed);
     const fovOffset=currentFovOffset(elapsed);
+    const zoomOffset=currentZoomStartupOffset(elapsed);
+    const zoomHighlightAlpha=zoomHighlightOpacity(elapsed);
+    const zoomFlashProgress=stepProgress(elapsed,STARTUP_ZOOM_CAL_MS,180);
 
-    // Outer track underlay. This reproduces dial_v9's startup blend but lands
-    // on TRACK_FINAL, so there is no end-of-sequence brightness jump.
     if(pTrack>0){
       const raw=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pTrack);
       const opacity=.25+.15*pTrack;
       const track=blendColor(COL_BG,raw,opacity);
-      const pulseTrack=readyPulse?lerpColor(track,COL_GREEN_MID,readyPulse):track;
-      drawOuterTrack(pulseTrack);
+      drawOuterTrack(track);
     }
 
     if(pFovRing>0) drawFovStartupSectors(pFovRing,fovOffset);
 
     if(pMajors>0){
       const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pMajors);
-      const final=readyPulse?lerpColor(c,COL_GREEN_BRIGHT,readyPulse):c;
-      drawZoomMajorTicks(0,final,pMajors);
+      drawZoomMajorTicks(0,c,pMajors);
     }
 
     if(pMinors>0){
-      drawZoomMinorTicks(0,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pMinors),COL_DARK);
+      drawZoomMinorTicks(zoomOffset,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_DIM,pMinors),COL_DARK);
+    }
+
+    if(zoomHighlightAlpha>0){
+      drawStartupZoomHighlight(zoomOffset,zoomHighlightAlpha,zoomFlashProgress);
     }
 
     if(pZoomNum>0) drawZoomLabelLayer(0,lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pZoomNum));
     if(pFovNum>0) drawFovLabelLayer(0,fovOffset,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovNum));
 
     if(pEyebrow>0){
-      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pEyebrow);
-      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN_MID,pEyebrow);
       drawEyebrowText('EO LENS',c);
     }
 
     if(pValue>0){
-      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
-      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pValue);
       drawValueText(24,false,c,true);
     }
 
     if(pFovReadout>0) drawFovReadoutText(84,false,lerpColor(COL_GREEN_BRIGHT,COL_DARK,pFovReadout));
 
     if(pPointer>0){
-      let c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pPointer);
-      if(readyPulse) c=lerpColor(c,COL_GREEN_BRIGHT,readyPulse);
+      const c=lerpColor(COL_GREEN_BRIGHT,COL_GREEN,pPointer);
       drawPointerLayer(false,c,true);
     }
-
-    // Scanner is a display overlay. It never distorts the underlying dial.
-    if(pScan>0 && pScan<1) drawScanLine(pScan);
   }
 
   function finishStartup(){
@@ -761,29 +766,9 @@
     else if(e.key==='ArrowLeft'||e.key==='ArrowDown'){ nudge(3); e.preventDefault(); }
   });
 
-  // External replay control mirrors the physical knob's deliberate 3-second
-  // hold. Accidental taps do nothing.
-  let holdTimer=0;
-  function cancelHold(){
-    if(holdTimer) clearTimeout(holdTimer);
-    holdTimer=0;
-    replayBtn.classList.remove('holding');
-  }
-  function beginHold(e){
-    if(sequenceActive) return;
-    e.preventDefault();
-    cancelHold();
-    replayBtn.classList.add('holding');
-    holdTimer=setTimeout(()=>{
-      cancelHold();
-      runStartup();
-    },BUTTON_HOLD_MS);
-  }
-  replayBtn.addEventListener('pointerdown',beginHold);
-  replayBtn.addEventListener('pointerup',cancelHold);
-  replayBtn.addEventListener('pointercancel',cancelHold);
-  replayBtn.addEventListener('pointerleave',cancelHold);
-  replayBtn.addEventListener('contextmenu',e=>e.preventDefault());
+  // Browser replay is intentionally immediate. The 3-second hold remains a
+  // physical-hardware safeguard only, because the encoder button is easy to bump.
+  replayBtn.addEventListener('click',runStartup);
 
   // Initial black frame, then boot.
   clearScreen();

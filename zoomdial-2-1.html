@@ -209,11 +209,11 @@
   const T_HIGHLIGHT_FADE_MS = 650;
 
   // Final lock confirmation: clean number lock, tiny beat, then a blunt
-  // 200 ms interface-state blip. The reticle rectangle fills solid green,
+  // 400 ms interface-state blip. The reticle rectangle fills solid green,
   // enclosed scale text inverts to black, then the normal hollow reticle
   // returns instantly. No fade, glow, or after-effect.
   const STARTUP_CONFIRM_MS = STARTUP_LOCK_MS + 50;
-  const T_CONFIRM_MS = 200;
+  const T_CONFIRM_MS = 400;
   const STARTUP_END_MS = STARTUP_CONFIRM_MS + T_CONFIRM_MS + 35;
 
   // Same practical animation cadence as the target hardware.
@@ -530,7 +530,7 @@
     const x=cx-POINTER_BOX_W/2;
 
     // Deliberately binary: this is an interface state, not an animation.
-    // The whole rectangle is simply "on" for ~200 ms, then gone.
+    // The whole rectangle is simply "on" for ~400 ms, then gone.
     fillRect(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,COL_GREEN);
     drawRectOutline(x,POINTER_BOX_Y,POINTER_BOX_W,POINTER_BOX_H,POINTER_BORDER,COL_GREEN);
     fillDownTriangle(cx,POINTER_CARET_Y0,POINTER_CARET_Y1,POINTER_CARET_W,COL_GREEN);
@@ -641,24 +641,26 @@
   // emitted as independent persistence events. Each event fades on its own,
   // allowing several generations to coexist instead of crossfading one-for-one.
 
+  // Unknown-character boxes are only a one-frame handoff into acquisition.
+  // The first numeric event begins immediately afterward, with no held pause.
   const FOCAL_DIGIT_EVENTS = [
-    {t:260,  value:'300'},
-    {t:430,  value:'135'},
-    {t:620,  value:'070'},
-    {t:820,  value:'200'},
-    {t:1040, value:'050'},
-    {t:1270, value:'100'},
-    {t:1510, value:'035'}
+    {t:35,  value:'300'},
+    {t:205,  value:'135'},
+    {t:395,  value:'070'},
+    {t:595,  value:'200'},
+    {t:815, value:'050'},
+    {t:1045, value:'100'},
+    {t:1285, value:'035'}
   ];
 
   const FOV_DIGIT_EVENTS = [
-    {t:260,  value:'65'},
-    {t:440,  value:'28'},
-    {t:640,  value:'10'},
-    {t:850,  value:'50'},
-    {t:1080, value:'14'},
-    {t:1320, value:'04'},
-    {t:1540, value:'20'}
+    {t:35,  value:'65'},
+    {t:215,  value:'28'},
+    {t:415,  value:'10'},
+    {t:625,  value:'50'},
+    {t:855, value:'14'},
+    {t:1095, value:'04'},
+    {t:1315, value:'20'}
   ];
 
   // Persistence controls, deliberately named instead of buried in function
